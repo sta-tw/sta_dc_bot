@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Iterable, Sequence
+from typing import Sequence
 
 try:
     import google.generativeai as genai

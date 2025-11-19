@@ -21,5 +21,4 @@ data/transcripts/*
 .vscode/
 .idea/
 
-# Configuration with secrets
 config/settings.json
