@@ -14,7 +14,8 @@ from .utils.logging_config import setup_logging
 def build_bot(settings_path: Path | str) -> commands.Bot:
     setup_logging()
 
-    settings = Settings.from_file(Path(settings_path))
+    settings_path = Path(settings_path)
+    settings = Settings.from_file(settings_path)
 
     intents = discord.Intents.default()
     intents.members = True
@@ -27,7 +28,14 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
     )
 
     bot.settings = settings
+    bot.settings_path = settings_path.resolve()
     bot.logger = logging.getLogger("bot")
+
+    @bot.event
+    async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+        if isinstance(error, commands.CommandNotFound):
+            return
+        raise error
 
     @bot.event
     async def setup_hook() -> None:

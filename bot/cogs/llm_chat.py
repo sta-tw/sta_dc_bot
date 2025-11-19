@@ -13,7 +13,7 @@ class LLMChat(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.client = GeminiClient()
+        self.client = GeminiClient(bot.settings)
         self._lock = asyncio.Lock()
 
     @commands.Cog.listener()
@@ -21,10 +21,22 @@ class LLMChat(commands.Cog):
         if message.author.bot or message.guild is None:
             return
 
+        ctx = await self.bot.get_context(message)
+        if ctx.valid:
+            return
+
         if not self._is_mentioning_bot(message):
             return
 
+        blocked = self.bot.settings.find_blocked_keyword(message.content)
+        if blocked:
+            return
+
         async with self._lock:
+            try:
+                await message.channel.fetch_message(message.id)
+            except (discord.NotFound, discord.Forbidden):
+                return
             await self._handle_llm_interaction(message)
 
     async def _handle_llm_interaction(self, message: discord.Message) -> None:
@@ -32,17 +44,28 @@ class LLMChat(commands.Cog):
 
         context_lines, previous_reply = await self._collect_context(message)
 
-        prompt_parts = [
-            "### 對話上下文\n",
-            "\n".join(context_lines) or "(無歷史訊息)",
-            "\n\n### 上一次機器人回覆\n",
-            previous_reply or "(尚未有回覆)",
-            "\n\n### 目前訊息\n",
-            f"{message.author.display_name}: {message.clean_content}",
-        ]
+        info_lines = []
+        
+        if self.bot.settings.ticket_categories:
+            info_lines.append("【客服分類資訊】")
+            for cat in self.bot.settings.ticket_categories:
+                info_lines.append(f"- {cat.label}: {cat.description}")
+            info_lines.append("")
+
+        if self.bot.settings.faq_content:
+            info_lines.append("【常見問題 (FAQ)】")
+            info_lines.append(self.bot.settings.faq_content)
+        
+        reference_info = "\n".join(info_lines) if info_lines else None
 
         try:
-            response = await self.client.generate(prompt_parts)
+            response = await self.client.generate_chat_reply(
+                context=context_lines,
+                previous_reply=previous_reply,
+                user_display=message.author.display_name,
+                message=message.clean_content,
+                reference_info=reference_info,
+            )
         except Exception as exc:
             self.bot.logger.exception("Gemini request failed", exc_info=exc)
             response = "抱歉，我目前無法處理您的請求。"
@@ -78,6 +101,9 @@ class LLMChat(commands.Cog):
         content = message.content
         mention_formats = {f"<@{bot_user.id}>", f"<@!{bot_user.id}>"}
         return any(token in content for token in mention_formats)
+
+    def refresh_settings(self) -> None:
+        self.client = GeminiClient(self.bot.settings)
 
 
 async def setup(bot: commands.Bot) -> None:
