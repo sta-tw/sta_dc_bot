@@ -20,3 +20,5 @@ data/transcripts/*
 
 .vscode/
 .idea/
+
+config/settings.json
