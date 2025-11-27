@@ -47,7 +47,7 @@
 
 ## 執行
 ```powershell
-py main.py
+python main.py
 ```
 
 第一次啟動後，Slash 指令會同步到指定伺服器（`guild_id`）。若想推播為全域指令，可將 `guild_id` 設為 `0`。
