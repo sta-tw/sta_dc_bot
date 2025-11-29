@@ -28,9 +28,10 @@ class FAQModal(discord.ui.Modal):
         self.add_item(self.content)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         new_content = self.content.value.strip()
         await self.cog.update_faq(new_content)
-        await interaction.response.send_message("FAQ 已更新並重新載入設定。", ephemeral=True)
+        await interaction.followup.send("FAQ 已更新並重新載入設定。", ephemeral=True)
 
 
 class LLMSettingsModal(discord.ui.Modal):
@@ -71,6 +72,7 @@ class LLMSettingsModal(discord.ui.Modal):
         self.add_item(self.api_keys)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         model = (self.model.value or "").strip()
         persona = (self.persona.value or "").strip()
         try:
@@ -82,7 +84,7 @@ class LLMSettingsModal(discord.ui.Modal):
         keys_raw = [t.strip() for t in (self.api_keys.value or "").split(",") if t.strip()]
         keys = [k for k in keys_raw if not k.startswith("****")]
         await self.cog.update_llm(model=model, persona=persona, max_sentences=max_sentences, api_keys=keys)
-        await interaction.response.send_message("LLM 設定已更新並重新載入。", ephemeral=True)
+        await interaction.followup.send("LLM 設定已更新並重新載入。", ephemeral=True)
 
 
 class BlockedKeywordModal(discord.ui.Modal):
@@ -100,9 +102,10 @@ class BlockedKeywordModal(discord.ui.Modal):
         self.add_item(self.keywords)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         terms = [token.strip().lower() for token in self.keywords.value.split(",") if token.strip()]
         await self.cog.update_blocked_keywords(terms)
-        await interaction.response.send_message("禁止字詞已更新並重新載入設定。", ephemeral=True)
+        await interaction.followup.send("禁止字詞已更新並重新載入設定。", ephemeral=True)
 
 
 class ConfigPanelView(discord.ui.View):
