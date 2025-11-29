@@ -165,7 +165,9 @@ class ModerationCog(commands.Cog):
     def _is_gibberish(self, text: str, settings: Settings) -> bool:
         if not text:
             return False
-        t = unicodedata.normalize("NFKC", text)
+        t = re.sub(r"<@!?\d+>", "", text)
+        t = re.sub(r"<@&\d+>", "", t)
+        t = unicodedata.normalize("NFKC", t)
         if len(t) < settings.moderation_gibberish_min_length:
             return False
         no_space = re.sub(r"\s+", "", t)
