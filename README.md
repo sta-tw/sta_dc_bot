@@ -79,3 +79,4 @@ pytest --cov=bot --cov-report=html
 1. 確認 `ticket_panel_channel_id` 指向要展示面板的頻道。
 2. 啟動機器人後由具權限的成員執行 `/ticket panel`，即可生成帶有按鈕與嵌入說明的訊息。
 3. 若需遠端調整 FAQ、禁止字詞或重新載入設定，可於 `config_channel_id` 指定頻道執行 `/config_panel` 呼叫互動面板。
+
