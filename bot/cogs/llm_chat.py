@@ -67,11 +67,7 @@ class LLMChat(commands.Cog):
                 reference_info=reference_info,
             )
         except Exception as exc:
-<<<<<<< HEAD
             self.bot.logger.exception("Cloudflare AI request failed", exc_info=exc)
-=======
-            self.bot.logger.exception("Gemini request failed", exc_info=exc)
->>>>>>> 07f5d12946880b37db560c58a54fc9721607ea9c
             response = "抱歉，我目前無法處理您的請求。"
 
         await message.reply(response, mention_author=False)
@@ -107,11 +103,7 @@ class LLMChat(commands.Cog):
         return any(token in content for token in mention_formats)
 
     def refresh_settings(self) -> None:
-<<<<<<< HEAD
         self.client = CloudflareAIClient(self.bot.settings)
-=======
-        self.client = GeminiClient(self.bot.settings)
->>>>>>> 07f5d12946880b37db560c58a54fc9721607ea9c
 
 
 async def setup(bot: commands.Bot) -> None:
