@@ -131,7 +131,11 @@ class TicketCog(commands.GroupCog, name="ticket"):
         super().__init__()
         self.bot = bot
         self._lock = asyncio.Lock()
+<<<<<<< HEAD
         self._llm_client = CloudflareAIClient(bot.settings)
+=======
+        self._llm_client = GeminiClient(bot.settings)
+>>>>>>> 07f5d12946880b37db560c58a54fc9721607ea9c
 
     @app_commands.command(name="panel", description="重新發布客服面板按鈕")
     async def post_panel(self, interaction: discord.Interaction) -> None:
@@ -348,7 +352,11 @@ class TicketCog(commands.GroupCog, name="ticket"):
         await interaction.followup.send(f"已清空面板頻道 {deleted} 則訊息。", ephemeral=True)
 
     def refresh_settings(self) -> None:
+<<<<<<< HEAD
         self._llm_client = CloudflareAIClient(self.bot.settings)
+=======
+        self._llm_client = GeminiClient(self.bot.settings)
+>>>>>>> 07f5d12946880b37db560c58a54fc9721607ea9c
 
     async def _export_transcript(self, channel: discord.TextChannel) -> Path:
         settings = self.bot.settings

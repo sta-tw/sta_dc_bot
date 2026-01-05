@@ -17,6 +17,7 @@ ENV/
 data/transcripts/*
 !data/transcripts/.gitkeep
 
+<<<<<<< HEAD
 # Testing
 .pytest_cache/
 .coverage
@@ -24,6 +25,8 @@ htmlcov/
 coverage.xml
 *.cover
 .hypothesis/
+=======
+>>>>>>> 07f5d12946880b37db560c58a54fc9721607ea9c
 
 .vscode/
 .idea/
