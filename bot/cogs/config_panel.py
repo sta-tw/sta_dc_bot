@@ -40,12 +40,6 @@ class LLMSettingsModal(discord.ui.Modal):
         super().__init__(title="編輯 LLM 設定")
         self.cog = cog
         s = cog.bot.settings
-        self.model = discord.ui.TextInput[str](
-            label="模型名稱",
-            style=discord.TextStyle.short,
-            required=False,
-            default=s.llm_model,
-        )
         self.persona = discord.ui.TextInput[str](
             label="提示詞（系統提示）",
             style=discord.TextStyle.paragraph,
@@ -58,22 +52,11 @@ class LLMSettingsModal(discord.ui.Modal):
             required=False,
             default=str(s.llm_max_sentences),
         )
-        api_keys_value = ", ".join(["****" + k[-4:] if len(k) >= 4 else "****" for k in s.llm_api_keys]) or ""
-        self.api_keys = discord.ui.TextInput[str](
-            label="API Keys（以逗號分隔）",
-            style=discord.TextStyle.paragraph,
-            required=False,
-            placeholder="key1,key2,key3",
-            default=api_keys_value,
-        )
-        self.add_item(self.model)
         self.add_item(self.persona)
         self.add_item(self.max_sentences)
-        self.add_item(self.api_keys)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        model = (self.model.value or "").strip()
         persona = (self.persona.value or "").strip()
         try:
             max_sentences = int((self.max_sentences.value or "3").strip())
@@ -81,9 +64,8 @@ class LLMSettingsModal(discord.ui.Modal):
                 max_sentences = 3
         except ValueError:
             max_sentences = 3
-        keys_raw = [t.strip() for t in (self.api_keys.value or "").split(",") if t.strip()]
-        keys = [k for k in keys_raw if not k.startswith("****")]
-        await self.cog.update_llm(model=model, persona=persona, max_sentences=max_sentences, api_keys=keys)
+        
+        await self.cog.update_llm(persona=persona, max_sentences=max_sentences)
         await interaction.followup.send("LLM 設定已更新並重新載入。", ephemeral=True)
 
 
@@ -223,17 +205,16 @@ class ConfigCog(commands.Cog):
         self._write_settings_json(data)
         await self.reload_settings()
 
-    async def update_llm(self, *, model: str | None, persona: str | None, max_sentences: int | None, api_keys: list[str] | None) -> None:
+    async def update_llm(self, *, persona: str | None = None, max_sentences: int | None = None) -> None:
         data = self._load_settings_json()
         llm = data.get("llm", {})
-        if model:
-            llm["model"] = model
+        
         if persona:
             llm["persona_prompt"] = persona
+        
         if max_sentences is not None:
             llm["max_sentences"] = int(max_sentences)
-        if api_keys is not None:
-            llm["api_keys"] = api_keys
+        
         data["llm"] = llm
         self._write_settings_json(data)
         await self.reload_settings()

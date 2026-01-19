@@ -19,8 +19,7 @@ class GeminiClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._model_name = os.getenv("GEMINI_MODEL", settings.llm_model)
-        persona_override = os.getenv("LLM_SYSTEM_PROMPT", "").strip()
-        self._persona_prompt = persona_override or settings.llm_persona_prompt
+        self._persona_prompt = settings.llm_persona_prompt
         self._max_sentences = settings.llm_max_sentences
         self._api_keys = self._load_api_keys()
         self._lock = asyncio.Lock()

@@ -19,14 +19,11 @@ class CloudflareAIClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._model_name = os.getenv("CLOUDFLARE_MODEL", "@cf/meta/llama-3.1-8b-instruct")
-        persona_override = os.getenv("LLM_SYSTEM_PROMPT", "").strip()
-        self._persona_prompt = persona_override or settings.llm_persona_prompt
+        self._model_name = os.getenv("CLOUDFLARE_MODEL")
+        self._persona_prompt = settings.llm_persona_prompt
         self._max_sentences = settings.llm_max_sentences
         self._lock = asyncio.Lock()
         self._logger = logging.getLogger("bot.llm")
-        
-        # Initialize Cloudflare AI client
         account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
         api_token = os.getenv("CLOUDFLARE_API_TOKEN", "")
         
@@ -106,7 +103,6 @@ class CloudflareAIClient:
         
         async with self._lock:
             try:
-                # Run the model in a thread to avoid blocking
                 response = await asyncio.to_thread(
                     self._client.run_model,
                     self._model_name,
@@ -115,7 +111,6 @@ class CloudflareAIClient:
                     temperature=0.7
                 )
                 
-                # Extract response text
                 content = self._extract_text(response)
                 if content:
                     return self._post_process(content)
@@ -130,12 +125,10 @@ class CloudflareAIClient:
     def _extract_text(self, response: dict) -> str:
         """Extract text from Cloudflare AI response."""
         try:
-            # Cloudflare AI response format: {'result': {'response': 'text'}}
             if isinstance(response, dict):
                 result = response.get('result', {})
                 if isinstance(result, dict):
                     return result.get('response', '')
-                # Alternative format
                 return response.get('response', '')
             return str(response)
         except Exception as exc:
@@ -160,22 +153,16 @@ class CloudflareAIClient:
     def _post_process(self, text: str) -> str:
         """Post-process the generated text."""
         sanitized = self.sanitize_text(text)
-        # Remove asterisks for emphasis
         sanitized = re.sub(r"\*[^*\n]*\*", "", sanitized)
-        # Remove square brackets
         sanitized = re.sub(r"\[[^\]]*\]", "", sanitized)
-        # Remove parentheses
         sanitized = re.sub(r"\([^\)]*\)", "", sanitized)
-        # Mask potential prompt leaks
         sanitized = self._mask_prompt_leaks(sanitized)
-        # Limit to max sentences
         sentences = re.split(r"(?<=[。.!?])\s+", sanitized.strip())
         if self._max_sentences and len(sentences) > self._max_sentences:
             sentences = sentences[: self._max_sentences]
         result = " ".join(sentence for sentence in sentences if sentence)
         if not result:
             return "喵？目前找不到可以分享的資訊，請再提供一些細節喔。"
-        # Remove persona signature if present
         persona_signature = re.compile(re.escape(self._persona_prompt), re.IGNORECASE)
         result = persona_signature.sub("", result)
         return result.strip()

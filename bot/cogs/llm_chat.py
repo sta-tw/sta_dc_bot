@@ -15,6 +15,7 @@ class LLMChat(commands.Cog):
         self.bot = bot
         self.client = CloudflareAIClient(bot.settings)
         self._lock = asyncio.Lock()
+        self._processing_queue: dict[int, discord.Message] = {}
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -40,37 +41,41 @@ class LLMChat(commands.Cog):
             await self._handle_llm_interaction(message)
 
     async def _handle_llm_interaction(self, message: discord.Message) -> None:
-        await message.channel.typing()
-
-        context_lines, previous_reply = await self._collect_context(message)
-
-        info_lines = []
-        
-        if self.bot.settings.ticket_categories:
-            info_lines.append("【客服分類資訊】")
-            for cat in self.bot.settings.ticket_categories:
-                info_lines.append(f"- {cat.label}: {cat.description}")
-            info_lines.append("")
-
-        if self.bot.settings.faq_content:
-            info_lines.append("【常見問題 (FAQ)】")
-            info_lines.append(self.bot.settings.faq_content)
-        
-        reference_info = "\n".join(info_lines) if info_lines else None
+        thinking_msg = await message.reply("思考中...", mention_author=False)
+        self._processing_queue[message.id] = thinking_msg
 
         try:
-            response = await self.client.generate_chat_reply(
-                context=context_lines,
-                previous_reply=previous_reply,
-                user_display=message.author.display_name,
-                message=message.clean_content,
-                reference_info=reference_info,
-            )
-        except Exception as exc:
-            self.bot.logger.exception("Cloudflare AI request failed", exc_info=exc)
-            response = "抱歉，我目前無法處理您的請求。"
+            context_lines, previous_reply = await self._collect_context(message)
 
-        await message.reply(response, mention_author=False)
+            info_lines = []
+            
+            if self.bot.settings.ticket_categories:
+                info_lines.append("【客服分類資訊】")
+                for cat in self.bot.settings.ticket_categories:
+                    info_lines.append(f"- {cat.label}: {cat.description}")
+                info_lines.append("")
+
+            if self.bot.settings.faq_content:
+                info_lines.append("【常見問題 (FAQ)】")
+                info_lines.append(self.bot.settings.faq_content)
+            
+            reference_info = "\n".join(info_lines) if info_lines else None
+
+            try:
+                response = await self.client.generate_chat_reply(
+                    context=context_lines,
+                    previous_reply=previous_reply,
+                    user_display=message.author.display_name,
+                    message=message.clean_content,
+                    reference_info=reference_info,
+                )
+            except Exception as exc:
+                self.bot.logger.exception("Cloudflare AI request failed", exc_info=exc)
+                response = "抱歉，我目前無法處理您的請求。"
+
+            await thinking_msg.edit(content=response)
+        finally:
+            self._processing_queue.pop(message.id, None)
 
     async def _collect_context(self, message: discord.Message) -> tuple[list[str], Optional[str]]:
         history: list[discord.Message] = []

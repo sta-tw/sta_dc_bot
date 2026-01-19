@@ -33,8 +33,6 @@ class Settings:
     ticket_categories: list[TicketCategory] = field(default_factory=list)
     faq_content: str = ""
     blocked_keywords: list[str] = field(default_factory=list)
-    llm_model: str = "gemini-2.0-flash"
-    llm_persona_prompt: str = "你是WinterCamp 2026的客服助理，請以親切專業的語氣提供協助。"
     llm_max_sentences: int = 3
     llm_api_keys: list[str] = field(default_factory=list)
     config_channel_id: int | None = None
@@ -74,9 +72,7 @@ class Settings:
         blocked_keywords = [term.strip().lower() for term in data.get("blocked_keywords", []) if term.strip()]
 
         llm_settings = data.get("llm", {})
-        default_persona = (
-            require_env("LLM_SYSTEM_PROMPT"))
-        persona_prompt = str(llm_settings.get("persona_prompt", default_persona))
+        persona_prompt = str(llm_settings.get("persona_prompt"))
         llm_model = str(llm_settings.get("model", "gemini-1.5-flash"))
         llm_max_sentences = int(llm_settings.get("max_sentences", 3))
         llm_api_keys = [
