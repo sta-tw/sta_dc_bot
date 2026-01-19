@@ -29,6 +29,8 @@ class Settings:
     ticket_panel_channel_id: int
     support_role_ids: list[int]
     transcript_dir: Path
+    llm_model: str
+    llm_persona_prompt: str
     extensions: list[str] = field(default_factory=list)
     ticket_categories: list[TicketCategory] = field(default_factory=list)
     faq_content: str = ""
