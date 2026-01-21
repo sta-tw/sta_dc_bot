@@ -33,18 +33,23 @@ class LLMChat(commands.Cog):
         if blocked:
             return
 
-        async with self._lock:
-            try:
-                await message.channel.fetch_message(message.id)
-            except (discord.NotFound, discord.Forbidden):
-                return
-            await self._handle_llm_interaction(message)
-
-    async def _handle_llm_interaction(self, message: discord.Message) -> None:
-        thinking_msg = await message.reply("思考中...", mention_author=False)
-        self._processing_queue[message.id] = thinking_msg
-
         try:
+            thinking_msg = await message.reply("思考中...", mention_author=False)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            self.bot.logger.warning(f"無法發送思考中訊息: {exc}")
+            return
+
+        async with self._lock:
+            queue_size = len(self._processing_queue)
+            self.bot.logger.info(
+                f"開始處理 LLM 請求 用戶={message.author.display_name} 頻道={message.channel.name} | 當前隊列={queue_size}"
+            )
+            await self._handle_llm_interaction(message, thinking_msg)
+
+    async def _handle_llm_interaction(self, message: discord.Message, thinking_msg: discord.Message) -> None:
+        try:
+            self._processing_queue[message.id] = thinking_msg
+            self.bot.logger.info(f"已發送思考中訊息 | msg_id={thinking_msg.id}")
             context_lines, previous_reply = await self._collect_context(message)
 
             info_lines = []
@@ -61,6 +66,7 @@ class LLMChat(commands.Cog):
             
             reference_info = "\n".join(info_lines) if info_lines else None
 
+            self.bot.logger.info("開始呼叫 Cloudflare AI API...")
             try:
                 response = await self.client.generate_chat_reply(
                     context=context_lines,
@@ -69,13 +75,29 @@ class LLMChat(commands.Cog):
                     message=message.clean_content,
                     reference_info=reference_info,
                 )
+                self.bot.logger.info(f"AI 回應長度: {len(response)} 字元")
             except Exception as exc:
                 self.bot.logger.exception("Cloudflare AI request failed", exc_info=exc)
                 response = "抱歉，我目前無法處理您的請求。"
 
-            await thinking_msg.edit(content=response)
+            self.bot.logger.info("準備編輯訊息...")
+            try:
+                await thinking_msg.edit(content=response)
+                self.bot.logger.info("訊息編輯成功")
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                self.bot.logger.warning(f"無法編輯回覆訊息: {exc}")
+        except Exception as exc:
+            self.bot.logger.exception("處理 LLM 互動時發生錯誤", exc_info=exc)
+            try:
+                await thinking_msg.edit(content="抱歉，處理您的請求時發生錯誤。")
+            except Exception:
+                pass
         finally:
             self._processing_queue.pop(message.id, None)
+            queue_size = len(self._processing_queue)
+            self.bot.logger.info(
+                f"完成處理 LLM 請求 | 用戶={message.author.display_name} | 剩餘隊列={queue_size}"
+            )
 
     async def _collect_context(self, message: discord.Message) -> tuple[list[str], Optional[str]]:
         history: list[discord.Message] = []

@@ -12,7 +12,6 @@
   - 亦可透過「編輯 LLM 設定」更新模型、人格提示、最大句數等參數。
   - `/config_set_channel` 可將當前頻道設定為面板限定頻道。
 - 配置集中於 `config/settings.json` 與 `.env`，支援 Cloudflare Worker AI。
- - 對話過濾：自動刪除含禁止字詞與伺服器邀請連結的訊息，並具備簡易洗頻防護。
 
 ## 安裝步驟
 1. 建立並啟用虛擬環境（建議）：
@@ -41,7 +40,6 @@
    - `faq_entries`：常見問題關鍵字與回覆內容
    - `blocked_keywords`：禁止出現的字詞清單
    - `llm`：模型名稱、貓娘 persona 與回覆句數上限
-   - `moderation`：洗頻防護與邀請連結過濾參數
    - `transcript_dir`：客服紀錄儲存路徑
 
 ## 執行

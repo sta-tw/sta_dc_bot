@@ -230,12 +230,6 @@ class ConfigCog(commands.Cog):
         chat_cog = self.bot.get_cog("LLMChat")
         if hasattr(chat_cog, "refresh_settings"):
             chat_cog.refresh_settings()
-        moderation_cog = self.bot.get_cog("ModerationCog") or self.bot.get_cog("Moderation") or self.bot.get_cog("ModerationCog")
-        if hasattr(moderation_cog, "refresh_settings"):
-            moderation_cog.refresh_settings()
-        mod_cog = self.bot.get_cog("ModerationCog")
-        if hasattr(mod_cog, "refresh_settings"):
-            mod_cog.refresh_settings()
 
     def _load_settings_json(self) -> dict:
         path: Path = self.bot.settings_path

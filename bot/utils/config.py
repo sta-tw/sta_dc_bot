@@ -39,17 +39,6 @@ class Settings:
     llm_api_keys: list[str] = field(default_factory=list)
     config_channel_id: int | None = None
     config_path: Path | None = None
-    moderation_spam_interval_seconds: int = 10
-    moderation_spam_max_messages: int = 5
-    moderation_delete_invite_links: bool = True
-    moderation_enable_rate_limit: bool = True
-    moderation_duplicate_window_seconds: int = 30
-    moderation_duplicate_max_repeats: int = 3
-    moderation_duplicate_min_length: int = 6
-    moderation_gibberish_enabled: bool = True
-    moderation_gibberish_min_length: int = 40
-    moderation_gibberish_long_run_no_space: int = 50
-    moderation_gibberish_ascii_min_length: int = 30
 
     @classmethod
     def from_file(cls, path: Path) -> "Settings":
@@ -84,19 +73,6 @@ class Settings:
         ]
         config_channel_id = int(data.get("config_channel_id", 0)) or None
 
-        moderation = data.get("moderation", {})
-        spam_interval = int(moderation.get("spam_interval_seconds", 10))
-        spam_max = int(moderation.get("spam_max_messages", 5))
-        delete_inv = bool(moderation.get("delete_invite_links", True))
-        enable_rate = bool(moderation.get("enable_rate_limit", True))
-        dup_window = int(moderation.get("duplicate_window_seconds", 30))
-        dup_repeats = int(moderation.get("duplicate_max_repeats", 3))
-        dup_min_len = int(moderation.get("duplicate_min_length", 6))
-        gib_enable = bool(moderation.get("gibberish_enabled", True))
-        gib_min_len = int(moderation.get("gibberish_min_length", 40))
-        gib_long_run = int(moderation.get("gibberish_long_run_no_space", 50))
-        gib_ascii_min = int(moderation.get("gibberish_ascii_min_length", 30))
-
         return cls(
             guild_id=int(data["guild_id"]),
             welcome_channel_id=int(data["welcome_channel_id"]),
@@ -114,17 +90,6 @@ class Settings:
             llm_api_keys=llm_api_keys,
             config_channel_id=config_channel_id,
             config_path=path.resolve(),
-            moderation_spam_interval_seconds=max(3, spam_interval),
-            moderation_spam_max_messages=max(3, spam_max),
-            moderation_delete_invite_links=delete_inv,
-            moderation_enable_rate_limit=enable_rate,
-            moderation_duplicate_window_seconds=max(5, dup_window),
-            moderation_duplicate_max_repeats=max(2, dup_repeats),
-            moderation_duplicate_min_length=max(1, dup_min_len),
-            moderation_gibberish_enabled=gib_enable,
-            moderation_gibberish_min_length=max(10, gib_min_len),
-            moderation_gibberish_long_run_no_space=max(20, gib_long_run),
-            moderation_gibberish_ascii_min_length=max(10, gib_ascii_min),
         )
 
     def find_blocked_keyword(self, text: str) -> str | None:
