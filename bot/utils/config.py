@@ -39,6 +39,8 @@ class Settings:
     llm_api_keys: list[str] = field(default_factory=list)
     config_channel_id: int | None = None
     config_path: Path | None = None
+    flags: dict[int, str] = field(default_factory=dict)
+    flag_announcement_channel_id: int | None = None
 
     @classmethod
     def from_file(cls, path: Path) -> "Settings":
@@ -73,6 +75,11 @@ class Settings:
         ]
         config_channel_id = int(data.get("config_channel_id", 0)) or None
 
+        # 讀取flag相關配置
+        flags_data = data.get("flags", {})
+        flags = {int(k): str(v) for k, v in flags_data.items()}
+        flag_announcement_channel_id = int(data.get("flag_announcement_channel_id", 0)) or None
+
         return cls(
             guild_id=int(data["guild_id"]),
             welcome_channel_id=int(data["welcome_channel_id"]),
@@ -90,6 +97,8 @@ class Settings:
             llm_api_keys=llm_api_keys,
             config_channel_id=config_channel_id,
             config_path=path.resolve(),
+            flags=flags,
+            flag_announcement_channel_id=flag_announcement_channel_id,
         )
 
     def find_blocked_keyword(self, text: str) -> str | None:
