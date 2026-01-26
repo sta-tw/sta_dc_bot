@@ -21,7 +21,7 @@ class FlagModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         flag = self.flag_input.value.strip()
         
-        cog: FlagSubmission = interaction.client.get_cog("FlagSubmission")  # type: ignore
+        cog: FlagSubmission = interaction.client.get_cog("FlagSubmission")
         if not cog:
             await interaction.response.send_message(
                 "系統錯誤，請稍後再試。",
