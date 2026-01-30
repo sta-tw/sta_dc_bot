@@ -33,25 +33,17 @@ class GeminiClient:
     async def generate_chat_reply(
         self,
         *,
-        context: list[str],
-        previous_reply: str | None,
         user_display: str,
         message: str,
         reference_info: str | None = None,
     ) -> str:
         safe_message = self.sanitize_text(message)
-        safe_context = [self.sanitize_text(item) for item in context]
-        safe_previous = self.sanitize_text(previous_reply) if previous_reply else None
         sections: list[tuple[str, str]] = []
         
         if reference_info:
             sections.append(("參考資訊 (知識庫)", self.sanitize_text(reference_info)))
 
-        sections.extend([
-            ("最近對話", "\n".join(safe_context) if safe_context else "(無歷史訊息)"),
-            ("上一輪回覆", safe_previous or "(尚未有回覆)"),
-            ("使用者訊息", f"{user_display}: {safe_message}"),
-        ])
+        sections.append(("使用者訊息", f"{user_display}: {safe_message}"))
         return await self.generate_sections(sections)
 
     async def generate_ticket_reply(

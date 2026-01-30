@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import discord
 from discord.ext import commands
@@ -50,7 +49,6 @@ class LLMChat(commands.Cog):
         try:
             self._processing_queue[message.id] = thinking_msg
             self.bot.logger.info(f"已發送思考中訊息 | msg_id={thinking_msg.id}")
-            context_lines, previous_reply = await self._collect_context(message)
 
             info_lines = []
             
@@ -69,8 +67,6 @@ class LLMChat(commands.Cog):
             self.bot.logger.info("開始呼叫 Cloudflare AI API...")
             try:
                 response = await self.client.generate_chat_reply(
-                    context=context_lines,
-                    previous_reply=previous_reply,
                     user_display=message.author.display_name,
                     message=message.clean_content,
                     reference_info=reference_info,
@@ -98,24 +94,6 @@ class LLMChat(commands.Cog):
             self.bot.logger.info(
                 f"完成處理 LLM 請求 | 用戶={message.author.display_name} | 剩餘隊列={queue_size}"
             )
-
-    async def _collect_context(self, message: discord.Message) -> tuple[list[str], Optional[str]]:
-        history: list[discord.Message] = []
-        async for msg in message.channel.history(limit=10, before=message):
-            history.append(msg)
-
-        history.reverse()
-        lines = [f"{msg.author.display_name}: {msg.clean_content}" for msg in history]
-
-        previous_reply: Optional[str] = None
-        bot_user = self.bot.user
-        if bot_user:
-            for msg in reversed(history):
-                if msg.author.id == bot_user.id:
-                    previous_reply = msg.clean_content
-                    break
-
-        return lines, previous_reply
 
     def _is_mentioning_bot(self, message: discord.Message) -> bool:
         bot_user = self.bot.user
