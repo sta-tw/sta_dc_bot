@@ -4,6 +4,8 @@ import asyncio
 import uuid
 from datetime import datetime
 from pathlib import Path
+import re
+import json
 
 import discord
 from discord import app_commands
@@ -130,6 +132,13 @@ class TicketCog(commands.GroupCog, name="ticket"):
         super().__init__()
         self.bot = bot
         self._lock = asyncio.Lock()
+        self._counters: dict[str, int] = {}
+        settings_path = getattr(self.bot.settings, "config_path", None)
+        if settings_path:
+            self._counters_path = Path(settings_path).parent / "ticket_counters.json"
+        else:
+            self._counters_path = Path("config") / "ticket_counters.json"
+        self._load_counters()
 
     @app_commands.command(name="panel", description="重新發布客服面板按鈕")
     async def post_panel(self, interaction: discord.Interaction) -> None:
@@ -220,9 +229,9 @@ class TicketCog(commands.GroupCog, name="ticket"):
                 role = interaction.guild.get_role(role_id)
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-
-            short_uuid = str(uuid.uuid4())[:8]
-            channel_name = f"ticket-{short_uuid}-{requester.id}"
+            next_num = self._increment_and_get(category)
+            prefix = getattr(category, "channel_prefix", "ticket") or "ticket"
+            channel_name = f"{prefix}-{next_num}"
             channel = await interaction.guild.create_text_channel(
                 channel_name,
                 category=category_channel,
@@ -376,6 +385,49 @@ class TicketCog(commands.GroupCog, name="ticket"):
                     await message.delete()
                 except discord.HTTPException:
                     self.bot.logger.debug("刪除舊面板失敗: %s", message.id)
+
+    def _find_next_ticket_number(self, category_channel: discord.CategoryChannel) -> str:
+        pattern = re.compile(r"^ticket-(\d{3})(?:-.*)?$")
+        max_num = 0
+        for ch in getattr(category_channel, "channels", []):
+            name = getattr(ch, "name", "")
+            m = pattern.match(name)
+            if m:
+                try:
+                    n = int(m.group(1))
+                    if n > max_num:
+                        max_num = n
+                except Exception:
+                    continue
+        next_num = max_num + 1
+        return f"{next_num:03d}"
+
+    def _load_counters(self) -> None:
+        try:
+            if self._counters_path.exists():
+                data = json.loads(self._counters_path.read_text(encoding="utf-8"))
+                self._counters = {str(k): int(v) for k, v in data.items()}
+            else:
+                self._counters = {}
+        except Exception:
+            self._counters = {}
+
+    def _save_counters(self) -> None:
+        try:
+            self._counters_path.parent.mkdir(parents=True, exist_ok=True)
+            self._counters_path.write_text(json.dumps(self._counters, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            self.bot.logger.exception("無法儲存 ticket_counters.json")
+
+    def _increment_and_get(self, category: TicketCategory) -> str:
+        key = getattr(category, "value", "default") or "default"
+        current = int(self._counters.get(key, 0)) + 1
+        self._counters[key] = current
+        try:
+            self._save_counters()
+        except Exception:
+            pass
+        return f"{current:03d}"
 
     def _sanitize_user_text(self, text: str) -> str:
         return text
