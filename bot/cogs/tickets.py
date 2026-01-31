@@ -10,7 +10,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..utils.config import TicketCategory
-from ..utils.cloudflare_ai_client import CloudflareAIClient
 
 PANEL_BUTTON_ID = "ticket:open"
 CLOSE_BUTTON_ID = "ticket:close"
@@ -131,7 +130,6 @@ class TicketCog(commands.GroupCog, name="ticket"):
         super().__init__()
         self.bot = bot
         self._lock = asyncio.Lock()
-        self._llm_client = CloudflareAIClient(bot.settings)
 
     @app_commands.command(name="panel", description="重新發布客服面板按鈕")
     async def post_panel(self, interaction: discord.Interaction) -> None:
@@ -249,17 +247,6 @@ class TicketCog(commands.GroupCog, name="ticket"):
         view = TicketCloseView(self)
         await channel.send(embed=embed, view=view)
 
-        reference_info = settings.faq_content if settings.faq_content else None
-
-        await self._send_ai_greeting(
-            channel=channel,
-            requester=requester.display_name,
-            category=category,
-            summary=summary,
-            details=details,
-            reference_info=reference_info,
-        )
-
         await interaction.followup.send(f"客服單已建立：{channel.mention}", ephemeral=True)
 
     @app_commands.command(name="close", description="關閉目前的客服單並保存紀錄")
@@ -348,7 +335,7 @@ class TicketCog(commands.GroupCog, name="ticket"):
         await interaction.followup.send(f"已清空面板頻道 {deleted} 則訊息。", ephemeral=True)
 
     def refresh_settings(self) -> None:
-        self._llm_client = CloudflareAIClient(self.bot.settings)
+        pass
 
     async def _export_transcript(self, channel: discord.TextChannel) -> Path:
         settings = self.bot.settings
@@ -391,31 +378,7 @@ class TicketCog(commands.GroupCog, name="ticket"):
                     self.bot.logger.debug("刪除舊面板失敗: %s", message.id)
 
     def _sanitize_user_text(self, text: str) -> str:
-        return self._llm_client.sanitize_text(text)
-
-    async def _send_ai_greeting(
-        self,
-        *,
-        channel: discord.TextChannel,
-        requester: str,
-        category: TicketCategory,
-        summary: str,
-        details: str,
-        reference_info: str | None,
-    ) -> None:
-        try:
-            response = await self._llm_client.generate_ticket_reply(
-                requester=requester,
-                category_label=category.label,
-                summary=summary,
-                description=details,
-                ai_hint=category.ai_hint,
-                reference_info=reference_info,
-            )
-        except Exception as exc:
-            self.bot.logger.exception("Ticket greeting failed", exc_info=exc)
-            return
-        await channel.send(response)
+        return text
 
 
 async def setup(bot: commands.Bot) -> None:
