@@ -52,6 +52,7 @@ class CloudflareAIClient:
         user_display: str,
         message: str,
         reference_info: str | None = None,
+        input_time: str | None = None,
     ) -> str:
         """Generate a chat reply based on user message."""
         safe_message = self.sanitize_text(message)
@@ -59,6 +60,9 @@ class CloudflareAIClient:
         
         if reference_info:
             sections.append(("參考資訊 (知識庫)", self.sanitize_text(reference_info)))
+
+        if input_time:
+            sections.append(("使用者訊息時間", str(input_time)))
 
         sections.append(("使用者訊息", f"{user_display}: {safe_message}"))
         return await self.generate_sections(sections)
