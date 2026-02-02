@@ -29,8 +29,10 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
 
     bot.settings = settings
     bot.settings_path = settings_path.resolve()
-    
-    # Initialize logger for the bot
+    bot.emoji = {
+        "welcome": "🎉",
+        "箭頭": "➤"
+    }
     logger = logging.getLogger("bot")
     bot.logger = logger
 
