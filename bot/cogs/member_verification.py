@@ -41,38 +41,44 @@ class MemberVerification(commands.Cog):
             "errors": []
         }
         
-        for role_name, user_id in self.role_members.items():
+        for role_name, username in self.role_members.items():
             try:
                 role = discord.utils.get(guild.roles, name=role_name)
                 if not role:
                     results["role_not_found"].append(f"身分組 `{role_name}` 不存在")
                     logger.warning(f"找不到身分組: {role_name}")
                     continue
-                try:
-                    member_id = int(user_id)
-                    member = guild.get_member(member_id)
-                except ValueError:
-                    results["not_found"].append(f"無效的 Discord ID: `{user_id}` (必須是純數字)")
-                    logger.warning(f"無效的 Discord ID: {user_id}")
-                    continue
-                
+
+                member = None
+                if "#" in username: 
+                    name, discrim = username.split("#", 1)
+                    member = discord.utils.get(guild.members, name=name, discriminator=discrim)
+                else:  
+                    members = [m for m in guild.members if m.name == username]
+                    if members:
+                        member = members[0]
+
                 if not member:
-                    results["not_found"].append(f"找不到 ID 為 `{user_id}` 的用戶 (可能不在伺服器中)")
-                    logger.warning(f"找不到用戶 ID: {user_id}")
+                    results["not_found"].append(f"找不到用戶 `{username}` (可能不在伺服器中)")
+                    logger.warning(f"找不到用戶: {username}")
                     continue
+
                 if role in member.roles:
-                    results["already_has"].append(f"`{member.name}` (ID: {user_id}) 已經有 `{role_name}` 身分組")
+                    results["already_has"].append(f"`{member.name}`#{member.discriminator} 已經有 `{role_name}` 身分組")
                     continue    
+
                 await member.add_roles(role)
-                results["success"].append(f"`{member.name}` (ID: {user_id}) → `{role_name}`")
-                logger.info(f"成功分配: {member.name} ({user_id}) -> {role_name}")
+                results["success"].append(f"`{member.name}`#{member.discriminator} → `{role_name}`")
+                logger.info(f"成功分配: {member.name}#{member.discriminator} -> {role_name}")
+
             except discord.Forbidden:
-                results["errors"].append(f"權限不足，無法分配 `{role_name}` 給用戶 ID `{user_id}`")
-                logger.error(f"權限不足: 無法分配 {role_name} 給用戶 ID {user_id}")
-                
+                results["errors"].append(f"權限不足，無法分配 `{role_name}` 給 `{username}`")
+                logger.error(f"權限不足: 無法分配 {role_name} 給 {username}")
+
             except Exception as e:
-                results["errors"].append(f"分配 `{role_name}` 給用戶 ID `{user_id}` 時發生錯誤: {str(e)}")
+                results["errors"].append(f"分配 `{role_name}` 給 `{username}` 時發生錯誤: {str(e)}")
                 logger.error(f"分配身分組時出現錯誤: {e}")
+
         report = "##身分組分配結果\n\n"
         
         if results["success"]:
