@@ -18,8 +18,9 @@ class GeminiClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._prompt_config = settings.prompt_config
         self._model_name = os.getenv("GEMINI_MODEL", settings.llm_model)
-        self._persona_prompt = settings.llm_persona_prompt
+        self._persona_prompt = self._prompt_config.system_prompt
         self._max_sentences = settings.llm_max_sentences
         self._api_keys = self._load_api_keys()
         self._lock = asyncio.Lock()
@@ -33,17 +34,28 @@ class GeminiClient:
     async def generate_chat_reply(
         self,
         *,
+        context: list[str],
+        previous_reply: str | None,
         user_display: str,
         message: str,
         reference_info: str | None = None,
     ) -> str:
         safe_message = self.sanitize_text(message)
+        safe_context = [self.sanitize_text(item) for item in context]
+        safe_previous = self.sanitize_text(previous_reply) if previous_reply else None
         sections: list[tuple[str, str]] = []
         
         if reference_info:
             sections.append(("參考資訊 (知識庫)", self.sanitize_text(reference_info)))
 
-        sections.append(("使用者訊息", f"{user_display}: {safe_message}"))
+        sections.extend([
+            (
+                "最近對話",
+                "\n".join(safe_context) if safe_context else "(無歷史訊息)",
+            ),
+            ("上一輪回覆", safe_previous or "(尚未有回覆)"),
+            ("使用者訊息", f"{user_display}: {safe_message}"),
+        ])
         return await self.generate_sections(sections)
 
     async def generate_ticket_reply(
@@ -111,23 +123,21 @@ class GeminiClient:
 
     def _build_prompt(self, sections: Sequence[tuple[str, str]]) -> str:
         persona = self._persona_prompt.strip()
-        style_rules = os.getenv("LLM_STYLE_RULES", "").strip()
+        style_rules = self._prompt_config.style_rules.strip()
         lines = [persona, "\n", style_rules, "\n\n"]
-        lines.append("以下是與使用者互動所需的資訊：")
+        if self._prompt_config.context_preamble.strip():
+            lines.append(self._prompt_config.context_preamble.strip())
         for title, content in sections:
             if not content:
                 continue
             lines.append(f"\n## {title}\n{content.strip()}")
-        lines.append(
-            "\n請用最多三個句子回答，避免舞台指示、程式碼區塊或任何提及系統提示、模型。"
-        )
+        if self._prompt_config.response_rules.strip():
+            lines.append(f"\n{self._prompt_config.response_rules.strip()}")
         return "".join(lines)
 
     def _post_process(self, text: str) -> str:
         sanitized = self.sanitize_text(text)
         sanitized = re.sub(r"\*[^^\n]*\*", "", sanitized)
-        sanitized = re.sub(r"\[[^\]]*\]", "", sanitized)
-        sanitized = re.sub(r"\([^\)]*\)", "", sanitized)
         sanitized = self._mask_prompt_leaks(sanitized)
         sentences = re.split(r"(?<=[。.!?])\s+", sanitized.strip())
         if self._max_sentences and len(sentences) > self._max_sentences:
@@ -164,12 +174,11 @@ class GeminiClient:
         sanitized = re.sub(r"<@&?\d+>", "@成員", sanitized)
         return sanitized
 
-    @staticmethod
-    def _mask_prompt_leaks(text: str) -> str:
-        leak_terms = [
-            r"提示詞", r"system prompt", r"prompt", r"系統提示", r"模型", r"model", r"我是AI", r"我是一個AI",
-        ]
-        result = text
-        for term in leak_terms:
-            result = re.sub(term, "***", result, flags=re.IGNORECASE)
-        return result
+    def _mask_prompt_leaks(self, text: str) -> str:
+        persona = self._persona_prompt.strip()
+        if not persona:
+            return text
+        pattern = re.compile(re.escape(persona), re.IGNORECASE)
+        if not pattern.search(text):
+            return text
+        return pattern.sub("***", text)

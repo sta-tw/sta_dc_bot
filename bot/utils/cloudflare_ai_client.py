@@ -15,12 +15,12 @@ from .config import Settings
 
 
 class CloudflareAIClient:
-    """Cloudflare Worker AI client for generating responses."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._prompt_config = settings.prompt_config
         self._model_name = os.getenv("CLOUDFLARE_MODEL")
-        self._persona_prompt = settings.llm_persona_prompt
+        self._persona_prompt = self._prompt_config.system_prompt
         self._max_sentences = settings.llm_max_sentences
         self._lock = asyncio.Lock()
         self._logger = logging.getLogger("bot.llm")
@@ -42,20 +42,22 @@ class CloudflareAIClient:
                 self._client = None
 
     async def generate_sections(self, sections: Sequence[tuple[str, str]]) -> str:
-        """Generate a response based on structured sections of information."""
         prompt = self._build_prompt(sections)
         return await self._run_model(prompt)
 
     async def generate_chat_reply(
         self,
         *,
+        context: list[str],
+        previous_reply: str | None,
         user_display: str,
         message: str,
         reference_info: str | None = None,
         input_time: str | None = None,
     ) -> str:
-        """Generate a chat reply based on user message."""
         safe_message = self.sanitize_text(message)
+        safe_context = [self.sanitize_text(item) for item in context]
+        safe_previous = self.sanitize_text(previous_reply) if previous_reply else None
         sections: list[tuple[str, str]] = []
         
         if reference_info:
@@ -64,7 +66,14 @@ class CloudflareAIClient:
         if input_time:
             sections.append(("使用者訊息時間", str(input_time)))
 
-        sections.append(("使用者訊息", f"{user_display}: {safe_message}"))
+        sections.extend([
+            (
+                "最近對話",
+                "\n".join(safe_context) if safe_context else "(無歷史訊息)",
+            ),
+            ("上一輪回覆", safe_previous or "(尚未有回覆)"),
+            ("使用者訊息", f"{user_display}: {safe_message}"),
+        ])
         return await self.generate_sections(sections)
 
     async def generate_ticket_reply(
@@ -77,7 +86,6 @@ class CloudflareAIClient:
         ai_hint: str | None,
         reference_info: str | None,
     ) -> str:
-        """Generate a ticket reply based on ticket information."""
         sections: list[tuple[str, str]] = [
             ("客戶", requester),
             ("分類", category_label),
@@ -91,7 +99,6 @@ class CloudflareAIClient:
         return await self.generate_sections(sections)
 
     async def _run_model(self, prompt: str) -> str:
-        """Run the Cloudflare AI model with the given prompt."""
         if self._client is None:
             return "目前尚未正確配置 Cloudflare AI，請檢查環境變數設定。"
         
@@ -119,7 +126,6 @@ class CloudflareAIClient:
                 return default_message
 
     def _extract_text(self, response: dict) -> str:
-        """Extract text from Cloudflare AI response."""
         try:
             if isinstance(response, dict):
                 result = response.get('result', {})
@@ -132,26 +138,22 @@ class CloudflareAIClient:
             return ""
 
     def _build_prompt(self, sections: Sequence[tuple[str, str]]) -> str:
-        """Build a prompt from structured sections."""
         persona = self._persona_prompt.strip()
-        style_rules = os.getenv("LLM_STYLE_RULES", "").strip()
+        style_rules = self._prompt_config.style_rules.strip()
         lines = [persona, "\n", style_rules, "\n\n"]
-        lines.append("以下是與使用者互動所需的資訊：")
+        if self._prompt_config.context_preamble.strip():
+            lines.append(self._prompt_config.context_preamble.strip())
         for title, content in sections:
             if not content:
                 continue
             lines.append(f"\n## {title}\n{content.strip()}")
-        lines.append(
-            "\n請用最多三個句子回答，避免舞台指示、程式碼區塊或任何提及系統提示、模型。"
-        )
+        if self._prompt_config.response_rules.strip():
+            lines.append(f"\n{self._prompt_config.response_rules.strip()}")
         return "".join(lines)
 
     def _post_process(self, text: str) -> str:
-        """Post-process the generated text."""
         sanitized = self.sanitize_text(text)
         sanitized = re.sub(r"\*[^*\n]*\*", "", sanitized)
-        sanitized = re.sub(r"\[[^\]]*\]", "", sanitized)
-        sanitized = re.sub(r"\([^\)]*\)", "", sanitized)
         sanitized = self._mask_prompt_leaks(sanitized)
         sentences = re.split(r"(?<=[。.!?])\s+", sanitized.strip())
         if self._max_sentences and len(sentences) > self._max_sentences:
@@ -165,21 +167,17 @@ class CloudflareAIClient:
 
     @staticmethod
     def sanitize_text(text: str | None) -> str:
-        """Sanitize text to prevent mentions and unwanted content."""
         if not text:
             return ""
         sanitized = text.replace("@everyone", "@ everyone").replace("@here", "@ here")
         sanitized = re.sub(r"<@&?\d+>", "@成員", sanitized)
         return sanitized
 
-    @staticmethod
-    def _mask_prompt_leaks(text: str) -> str:
-        """Mask terms that might leak system prompts."""
-        leak_terms = [
-            r"提示詞", r"system prompt", r"prompt", r"系統提示", r"模型", r"model", 
-            r"我是AI", r"我是一個AI", r"cloudflare", r"worker"
-        ]
-        result = text
-        for term in leak_terms:
-            result = re.sub(term, "***", result, flags=re.IGNORECASE)
-        return result
+    def _mask_prompt_leaks(self, text: str) -> str:
+        persona = self._persona_prompt.strip()
+        if not persona:
+            return text
+        pattern = re.compile(re.escape(persona), re.IGNORECASE)
+        if not pattern.search(text):
+            return text
+        return pattern.sub("***", text)

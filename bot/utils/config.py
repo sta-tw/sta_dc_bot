@@ -21,6 +21,24 @@ class TicketCategory:
 
 
 @dataclass(slots=True)
+class PromptConfig:
+
+    system_prompt: str
+    style_rules: str
+    context_preamble: str
+    response_rules: str
+
+    @classmethod
+    def from_env(cls) -> "PromptConfig":
+        return cls(
+            system_prompt=require_env("LLM_SYSTEM_PROMPT"),
+            style_rules=require_env("LLM_STYLE_RULES"),
+            context_preamble=require_env("LLM_CONTEXT_PREAMBLE"),
+            response_rules=require_env("LLM_RESPONSE_RULES"),
+        )
+
+
+@dataclass(slots=True)
 class Settings:
 
     guild_id: int
@@ -30,7 +48,7 @@ class Settings:
     support_role_ids: list[int]
     transcript_dir: Path
     llm_model: str
-    llm_persona_prompt: str
+    prompt_config: PromptConfig
     extensions: list[str] = field(default_factory=list)
     ticket_categories: list[TicketCategory] = field(default_factory=list)
     faq_content: str = ""
@@ -39,8 +57,6 @@ class Settings:
     llm_api_keys: list[str] = field(default_factory=list)
     config_channel_id: int | None = None
     config_path: Path | None = None
-    flags: dict[int, str] = field(default_factory=dict)
-    flag_announcement_channel_id: int | None = None
 
     @classmethod
     def from_file(cls, path: Path) -> "Settings":
@@ -65,7 +81,6 @@ class Settings:
         blocked_keywords = [term.strip().lower() for term in data.get("blocked_keywords", []) if term.strip()]
 
         llm_settings = data.get("llm", {})
-        persona_prompt = str(llm_settings.get("persona_prompt"))
         llm_model = str(llm_settings.get("model", "gemini-1.5-flash"))
         llm_max_sentences = int(llm_settings.get("max_sentences", 3))
         llm_api_keys = [
@@ -74,11 +89,7 @@ class Settings:
             if isinstance(key, str) and key.strip()
         ]
         config_channel_id = int(data.get("config_channel_id", 0)) or None
-
-        # 讀取flag相關配置
-        flags_data = data.get("flags", {})
-        flags = {int(k): str(v) for k, v in flags_data.items()}
-        flag_announcement_channel_id = int(data.get("flag_announcement_channel_id", 0)) or None
+        prompt_config = PromptConfig.from_env()
 
         return cls(
             guild_id=int(data["guild_id"]),
@@ -92,13 +103,11 @@ class Settings:
             faq_content=faq_content,
             blocked_keywords=blocked_keywords,
             llm_model=llm_model,
-            llm_persona_prompt=persona_prompt,
+            prompt_config=prompt_config,
             llm_max_sentences=max(1, llm_max_sentences),
             llm_api_keys=llm_api_keys,
             config_channel_id=config_channel_id,
             config_path=path.resolve(),
-            flags=flags,
-            flag_announcement_channel_id=flag_announcement_channel_id,
         )
 
     def find_blocked_keyword(self, text: str) -> str | None:
