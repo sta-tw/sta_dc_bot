@@ -1,0 +1,46 @@
+{
+  "guild_id": 0,
+  "welcome_channel_id": 1430478788361326692,
+  "ticket_category_id": 1439964394246373476,
+  "ticket_panel_channel_id": 1439964394246373476,
+  "config_channel_id": 1439964830365913200,
+  "support_role_ids": [
+    1430442450152980531,
+    1430447307052290088
+  ],
+  "blocked_keywords": [],
+  "ticket_categories": [
+    {
+      "label": "一般協助",
+      "value": "general",
+      "description": "帳號、流程與一般諮詢",
+      "channel_prefix": "ticket-general",
+      "ai_hint": "一般問題"
+    },
+    {
+      "label": "活動資訊",
+      "value": "event",
+      "description": "活動時程、場地、報名相關問題",
+      "channel_prefix": "ticket-event",
+      "ai_hint": "活動相關"
+    },
+    {
+      "label": "技術支援",
+      "value": "tech",
+      "description": "系統操作或技術問題",
+      "channel_prefix": "ticket-tech",
+      "ai_hint": "技術支援"
+    }
+  ],
+  "llm": {
+    "api_keys": []
+  },
+  "transcript_dir": "data/transcripts",
+  "extensions": [
+    "bot.cogs.welcome",
+    "bot.cogs.tickets",
+    "bot.cogs.llm_chat",
+    "bot.cogs.admin_tools"
+  ],
+  "faq_content": ""
+}
