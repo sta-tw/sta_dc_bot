@@ -47,20 +47,6 @@ python main.py
 
 第一次啟動後，Slash 指令會同步到指定伺服器（`guild_id`）。若想推播為全域指令，可將 `guild_id` 設為 `0`。
 
-## 測試
-
-詳細的測試說明請參閱 [TESTING.md](TESTING.md)。
-
-快速運行測試：
-```powershell
-pytest
-```
-
-查看測試覆蓋率：
-```powershell
-pytest --cov=bot --cov-report=html
-```
-
 ## 對話紀錄
 關閉客服單時會將頻道歷史訊息寫入 `data/transcripts/` 下的文字檔，並私訊檔案給開單者。
 
@@ -70,7 +56,3 @@ pytest --cov=bot --cov-report=html
 - 進入點 `main.py`
 
 如需新增功能，只要在 `config/settings.json` 的 `extensions` 陣列加入新的模組路徑即可。
-
-## 面板部署提醒
-1. 確認 `ticket_panel_channel_id` 指向要展示面板的頻道。
-2. 啟動機器人後由具權限的成員執行 `/ticket panel`，即可生成帶有按鈕與嵌入說明的訊息。
