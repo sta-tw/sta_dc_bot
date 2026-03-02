@@ -28,7 +28,7 @@ class MemberVerification(commands.Cog):
     async def assign_roles(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         self.role_members = self.load_data()
-        
+
         if not self.role_members:
             await interaction.followup.send("沒有可分配的資料，請檢查 JSON 檔案。", ephemeral=True)
             return
@@ -40,7 +40,7 @@ class MemberVerification(commands.Cog):
             "already_has": [],
             "errors": []
         }
-        
+
         for role_name, username in self.role_members.items():
             try:
                 role = discord.utils.get(guild.roles, name=role_name)
@@ -50,10 +50,10 @@ class MemberVerification(commands.Cog):
                     continue
 
                 member = None
-                if "#" in username: 
+                if "#" in username:
                     name, discrim = username.split("#", 1)
                     member = discord.utils.get(guild.members, name=name, discriminator=discrim)
-                else:  
+                else:
                     members = [m for m in guild.members if m.name == username]
                     if members:
                         member = members[0]
@@ -65,7 +65,7 @@ class MemberVerification(commands.Cog):
 
                 if role in member.roles:
                     results["already_has"].append(f"`{member.name}`#{member.discriminator} 已經有 `{role_name}` 身分組")
-                    continue    
+                    continue
 
                 await member.add_roles(role)
                 results["success"].append(f"`{member.name}`#{member.discriminator} → `{role_name}`")
@@ -80,36 +80,36 @@ class MemberVerification(commands.Cog):
                 logger.error(f"分配身分組時出現錯誤: {e}")
 
         report = "##身分組分配結果\n\n"
-        
+
         if results["success"]:
             report += f"### 成功分配 ({len(results['success'])})\n"
             report += "\n".join(results["success"][:10])
             if len(results["success"]) > 10:
                 report += f"\n... 還有 {len(results['success']) - 10} 筆成功記錄"
             report += "\n\n"
-        
+
         if results["already_has"]:
             report += f"### 已有身分組 ({len(results['already_has'])})\n"
             report += "\n".join(results["already_has"][:5])
             if len(results["already_has"]) > 5:
                 report += f"\n... 還有 {len(results['already_has']) - 5} 筆"
             report += "\n\n"
-        
+
         if results["not_found"]:
             report += f"### 找不到用戶 ({len(results['not_found'])})\n"
             report += "\n".join(results["not_found"][:5])
             if len(results["not_found"]) > 5:
                 report += f"\n... 還有 {len(results['not_found']) - 5} 筆"
             report += "\n\n"
-        
+
         if results["role_not_found"]:
             report += f"### 找不到身分組 ({len(results['role_not_found'])})\n"
             report += "\n".join(results["role_not_found"])
             report += "\n\n"
-        
+
         if results["errors"]:
             report += f"### 錯誤 ({len(results['errors'])})\n"
-            report += "\n".join(results["errors"])        
+            report += "\n".join(results["errors"])
         if len(report) > 1900:
             chunks = [report[i:i+1900] for i in range(0, len(report), 1900)]
             for i, chunk in enumerate(chunks):
@@ -119,7 +119,7 @@ class MemberVerification(commands.Cog):
                     await interaction.followup.send(chunk, ephemeral=True)
         else:
             await interaction.followup.send(report, ephemeral=True)
-    
+
     @assign_roles.error
     async def assign_roles_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.errors.MissingPermissions):

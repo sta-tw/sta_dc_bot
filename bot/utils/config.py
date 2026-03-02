@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 @dataclass(slots=True)
 class TicketCategory:
 
@@ -18,7 +17,6 @@ class TicketCategory:
     description: str
     channel_prefix: str
     ai_hint: str | None = None
-
 
 @dataclass(slots=True)
 class PromptConfig:
@@ -31,12 +29,11 @@ class PromptConfig:
     @classmethod
     def from_env(cls) -> "PromptConfig":
         return cls(
-            system_prompt=require_env("LLM_SYSTEM_PROMPT"),
-            style_rules=require_env("LLM_STYLE_RULES"),
-            context_preamble=require_env("LLM_CONTEXT_PREAMBLE"),
-            response_rules=require_env("LLM_RESPONSE_RULES"),
+            system_prompt=get_env_or_default("LLM_SYSTEM_PROMPT", ""),
+            style_rules=get_env_or_default("LLM_STYLE_RULES", ""),
+            context_preamble=get_env_or_default("LLM_CONTEXT_PREAMBLE", ""),
+            response_rules=get_env_or_default("LLM_RESPONSE_RULES", ""),
         )
-
 
 @dataclass(slots=True)
 class Settings:
@@ -126,7 +123,6 @@ class Settings:
                 return category
         return None
 
-
 def require_env(name: str) -> str:
     from os import getenv
 
@@ -134,3 +130,8 @@ def require_env(name: str) -> str:
     if result is None or not result.strip():
         raise RuntimeError(f"Environment variable {name} is not set")
     return result
+
+def get_env_or_default(name: str, default: str = "") -> str:
+    from os import getenv
+    result = getenv(name)
+    return result if result and result.strip() else default

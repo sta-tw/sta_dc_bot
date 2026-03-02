@@ -3,7 +3,6 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 
-
 class Welcome(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -19,7 +18,6 @@ class Welcome(commands.Cog):
 
         if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel)):
             await channel.send(f"歡迎 {member.mention} 加入伺服器！🎉")
-
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Welcome(bot))

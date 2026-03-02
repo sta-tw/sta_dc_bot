@@ -16,7 +16,6 @@ from ..utils.config import TicketCategory
 PANEL_BUTTON_ID = "ticket:open"
 CLOSE_BUTTON_ID = "ticket:close"
 
-
 class TicketCloseView(discord.ui.View):
 
     def __init__(self, cog: "TicketCog") -> None:
@@ -31,7 +30,6 @@ class TicketCloseView(discord.ui.View):
     )
     async def close_ticket(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.process_close_ticket(interaction)
-
 
 class TicketModal(discord.ui.Modal):
 
@@ -62,7 +60,6 @@ class TicketModal(discord.ui.Modal):
             details=self.details.value,
         )
 
-
 class TicketCategorySelect(discord.ui.Select):
 
     def __init__(self, cog: "TicketCog") -> None:
@@ -86,7 +83,6 @@ class TicketCategorySelect(discord.ui.Select):
             return
         await interaction.response.send_modal(TicketModal(self.cog, category))
 
-
 class TicketCategoryView(discord.ui.View):
 
     def __init__(self, cog: "TicketCog") -> None:
@@ -99,7 +95,6 @@ class TicketCategoryView(discord.ui.View):
     @discord.ui.button(label="取消", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_message("已取消建立客服單。", ephemeral=True)
-
 
 class TicketPanelView(discord.ui.View):
 
@@ -124,7 +119,6 @@ class TicketPanelView(discord.ui.View):
 
         view = TicketCategoryView(self.cog)
         await interaction.response.send_message("請選擇客服分類：", view=view, ephemeral=True)
-
 
 class TicketCog(commands.GroupCog, name="ticket"):
 
@@ -156,23 +150,19 @@ class TicketCog(commands.GroupCog, name="ticket"):
             await interaction.response.send_message("設定的客服面板頻道不存在。", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
         await self._cleanup_panel_messages(channel)
         embed = self._build_panel_embed(interaction.guild)
         view = TicketPanelView(self)
         await channel.send(embed=embed, view=view)
-        await interaction.response.send_message("客服面板已發布。", ephemeral=True)
+        await interaction.followup.send("客服面板已發布。", ephemeral=True)
 
     def _build_panel_embed(self, guild: discord.Guild) -> discord.Embed:
         description = (
-            "無論您想了解我們的活動、提出合作提案、加入團隊、尋求資源協助，"
-            "或是有任何疑問想諮詢，我們都非常樂意聆聽與交流！"
+
         )
         contact_steps = (
-            "與我們聯繫的方式：\n"
-            "• 點擊下方「聯絡我們」按鈕\n"
-            "• 簡單描述您的需求或問題\n"
-            "• 系統會為您建立專屬討論頻道\n"
-            "• 在專屬頻道中與我們的團隊成員即時交流"
+
         )
 
         embed = discord.Embed(
@@ -252,7 +242,7 @@ class TicketCog(commands.GroupCog, name="ticket"):
         if settings.support_role_ids:
             mentions = " ".join(f"<@&{role_id}>" for role_id in settings.support_role_ids)
             await channel.send(f"{mentions} 有新的客服單！")
-        
+
         view = TicketCloseView(self)
         await channel.send(embed=embed, view=view)
 
@@ -335,7 +325,7 @@ class TicketCog(commands.GroupCog, name="ticket"):
 
         try:
             self.bot.logger.info(
-                "Ticket panel refreshed | channel=%s deleted=%s by=%s",
+                "已清空頻道 %s 的 %d 則訊息，操作者: %s",
                 getattr(channel, "id", None), deleted, getattr(interaction.user, "id", None),
             )
         except Exception:
@@ -431,7 +421,6 @@ class TicketCog(commands.GroupCog, name="ticket"):
 
     def _sanitize_user_text(self, text: str) -> str:
         return text
-
 
 async def setup(bot: commands.Bot) -> None:
     cog = TicketCog(bot)

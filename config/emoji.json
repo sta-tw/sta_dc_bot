@@ -1,0 +1,132 @@
+{
+    "emojis": {
+        "verify_check": {
+            "id": 0,
+            "format": "✅"
+        },
+        "F": {
+            "id": 0,
+            "format": "🎯"
+        },
+        "arrow": {
+            "id": 0,
+            "format": "➡️"
+        },
+        "loading1": {
+            "id": 0,
+            "format": "⏳"
+        },
+        "golden_dimond": {
+            "id": 0,
+            "format": "💎"
+        },
+        "purple_dimond": {
+            "id": 0,
+            "format": "💜"
+        },
+        "cat1": {
+            "id": 0,
+            "format": "🐱"
+        },
+        "red_light": {
+            "id": 0,
+            "format": "🔴"
+        },
+        "announce1": {
+            "id": 0,
+            "format": "📢"
+        },
+        "num1": {
+            "id": 0,
+            "format": "1️⃣"
+        },
+        "num2": {
+            "id": 0,
+            "format": "2️⃣"
+        },
+        "send": {
+            "id": 0,
+            "format": "📨"
+        },
+        "loading2": {
+            "id": 0,
+            "format": "⏰"
+        },
+        "frog1": {
+            "id": 0,
+            "format": "🐸"
+        },
+        "green_motion": {
+            "id": 0,
+            "format": "✅"
+        },
+        "angry_motion": {
+            "id": 0,
+            "format": "❌"
+        },
+        "frog2": {
+            "id": 0,
+            "format": "🐸"
+        },
+        "blue_fire": {
+            "id": 0,
+            "format": "🔵"
+        },
+        "red_fire": {
+            "id": 0,
+            "format": "🔥"
+        },
+        "!": {
+            "id": 0,
+            "format": "❗"
+        },
+        "cheers": {
+            "id": 0,
+            "format": "🎉"
+        },
+        "gay1": {
+            "id": 0,
+            "format": "🏳️‍🌈"
+        },
+        "gay2": {
+            "id": 0,
+            "format": "❤️"
+        },
+        "gay3": {
+            "id": 0,
+            "format": "💕"
+        },
+        "gay4": {
+            "id": 0,
+            "format": "💖"
+        },
+        "crown1": {
+            "id": 0,
+            "format": "👑"
+        },
+        "cat0": {
+            "id": 0,
+            "format": "🐈"
+        },
+        "cat2": {
+            "id": 0,
+            "format": "😺"
+        },
+        "cat3": {
+            "id": 0,
+            "format": "😸"
+        },
+        "cat4": {
+            "id": 0,
+            "format": "😻"
+        },
+        "heart1": {
+            "id": 0,
+            "format": "💗"
+        },
+        "123": {
+            "id": 123,
+            "format": "<a:123:123>"
+        }
+    }
+}
