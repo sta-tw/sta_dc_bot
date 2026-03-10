@@ -110,6 +110,21 @@ class SubmitApplicationView(View):
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        has_file_or_link = False
+        async for msg in interaction.channel.history(limit=50):
+            if msg.author.id == interaction.user.id:
+                if msg.attachments or "http://" in msg.content.lower() or "https://" in msg.content.lower():
+                    has_file_or_link = True
+                    break
+        
+        if not has_file_or_link:
+            embed = discord.Embed(
+                title="缺少備審資料",
+                description="請先上傳備審資料或提供連結後再送出申請",
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
         status_embed = discord.Embed(
             title=f"您的申請正在審核中 {self.emoji.get('loading2')}",
             description=(

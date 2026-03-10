@@ -35,14 +35,14 @@
   "transcript_dir": "data/transcripts",
   "extensions": [
     "bot.cogs.welcome",
-    "bot.cogs.tickets",
     "bot.cogs.admin_tools",
     "bot.cogs.role_setup",
     "bot.cogs.manage_application",
     "bot.cogs.delete_channel",
     "bot.cogs.set_category",
     "bot.cogs.exchange_setup",
-    "bot.cogs.role_button"
+    "bot.cogs.role_button",
+    "bot.cogs.member_verification"
   ],
   "faq_content": "",
   "llm": {
