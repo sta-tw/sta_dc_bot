@@ -18,7 +18,7 @@ class Exchange_Setup(commands.Cog):
     async def setup_buttons(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title=f"{self.emoji.get('cheers')} 交換備審申請",
-            description=f"按 F 進入申請",
+            description=f"按下按鈕進入申請",
             color=discord.Color.blue()
         )
 

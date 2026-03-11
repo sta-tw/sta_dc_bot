@@ -178,7 +178,8 @@ class SubmitApplicationView(View):
             admin_role = interaction.guild.get_role(admin_id)
             mention_text = admin_role.mention if admin_role else "@管理員"
         else:
-            mention_text = "@管理員"
+            admin_role = discord.utils.get(interaction.guild.roles, name="管理員")
+            mention_text = admin_role.mention if admin_role else "@管理員"
 
         admin_embed = discord.Embed(
             title=f"{self.emoji.get('frog1')} 申請審核面板",
@@ -241,7 +242,7 @@ class ApplicationApprovalView(View):
         await db_manager.update_application_status(self.user_id, "approved")
 
         role_id = await db_manager.get_role_id("exchange")
-        role_name = "Exchange"
+        role_name = "交換備審"
 
         role = await get_or_create_role(
             interaction.guild,
