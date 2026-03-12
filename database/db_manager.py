@@ -117,7 +117,17 @@ class DatabaseManager:
         if user_id:
             return data.get("users", {}).get(user_id, [])
         return data
-    
+
+    async def get_verification_role(self, user_id: str) -> Optional[int]:
+        with open(self.verification_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        user_roles = data.get("users", {}).get(user_id, [])
+        if user_roles:
+            role_name = user_roles[0] if isinstance(user_roles, list) else user_roles
+            return data.get("roles", {}).get(role_name)
+        return None
+
     async def get_all_user_roles(self, user_id: str) -> List[Dict[str, Any]]:
         """獲取用戶的所有驗證角色"""
         return await self.get_verification_roles(user_id)
@@ -132,6 +142,12 @@ class DatabaseManager:
             role_list.append({"name": role_name, "id": role_id})
 
         return role_list
+
+    async def get_role_id(self, role_name: str) -> Optional[int]:
+        with open(self.verification_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        return data.get("roles", {}).get(role_name)
 
     async def update_role_id(self, role_name: str, role_id: int):
         with open(self.verification_json, 'r', encoding='utf-8') as f:
@@ -152,6 +168,13 @@ class DatabaseManager:
     def save_guild_settings(self, settings: Dict[str, Any]):
         with open(self.config_json, 'w', encoding='utf-8') as f:
             json.dump(settings, f, ensure_ascii=False, indent=4)
+
+    async def save_admin_role(self, role_id: int):
+        settings = self.load_guild_settings()
+        if "roles" not in settings:
+            settings["roles"] = {}
+        settings["roles"]["admin"] = role_id
+        self.save_guild_settings(settings)
 
     async def get_application_category(self) -> Optional[int]:
         config = self.load_guild_settings()

@@ -321,7 +321,7 @@ class StudentApplicationModal(Modal):
                 {"name": "要申請的身份組", "value": self.role.value, "inline": True},
                 {"name": "證明", "value": self.verify.value, "inline": True}
             ],
-            "embed_fields": [
+            "admin_fields": [
                 {
                     "name": "要申請的身份組",
                     "value": self.role.value,
@@ -428,7 +428,7 @@ class ElderApplicationModal(Modal):
                 {"name": "申請者身份", "value": "特選老人", "inline": False},
                 {"name": "證明", "value": self.verify.value, "inline": False}
             ],
-            "embed_fields": [
+            "admin_fields": [
                 {
                     "name": "證明",
                     "value": self.verify.value,
@@ -494,6 +494,21 @@ class SubmitApplicationView(View):
             embed = discord.Embed(
                 title="權限不足",
                 description="只有申請人可以送出申請。",
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        has_file_or_link = False
+        async for msg in interaction.channel.history(limit=50):
+            if msg.author.id == interaction.user.id:
+                if msg.attachments or "http://" in msg.content.lower() or "https://" in msg.content.lower():
+                    has_file_or_link = True
+                    break
+        
+        if not has_file_or_link:
+            embed = discord.Embed(
+                title="缺少證明文件or連結",
+                description="請先上傳證明文件或提供連結後再送出申請",
                 color=discord.Color.red()
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)

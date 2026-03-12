@@ -110,6 +110,21 @@ class SubmitApplicationView(View):
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        has_file_or_link = False
+        async for msg in interaction.channel.history(limit=50):
+            if msg.author.id == interaction.user.id:
+                if msg.attachments or "http://" in msg.content.lower() or "https://" in msg.content.lower():
+                    has_file_or_link = True
+                    break
+        
+        if not has_file_or_link:
+            embed = discord.Embed(
+                title="缺少備審資料",
+                description="請先上傳備審資料或提供連結後再送出申請",
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
         status_embed = discord.Embed(
             title=f"您的申請正在審核中 {self.emoji.get('loading2')}",
             description=(
@@ -163,7 +178,8 @@ class SubmitApplicationView(View):
             admin_role = interaction.guild.get_role(admin_id)
             mention_text = admin_role.mention if admin_role else "@管理員"
         else:
-            mention_text = "@管理員"
+            admin_role = discord.utils.get(interaction.guild.roles, name="管理員")
+            mention_text = admin_role.mention if admin_role else "@管理員"
 
         admin_embed = discord.Embed(
             title=f"{self.emoji.get('frog1')} 申請審核面板",
@@ -226,7 +242,7 @@ class ApplicationApprovalView(View):
         await db_manager.update_application_status(self.user_id, "approved")
 
         role_id = await db_manager.get_role_id("exchange")
-        role_name = "Exchange"
+        role_name = "交換備審"
 
         role = await get_or_create_role(
             interaction.guild,

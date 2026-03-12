@@ -65,5 +65,18 @@ class Set_Category(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="set_admin", description="設置管理員身分組(admin相關＠失效時使用)")
+    @is_admin()
+    async def set_admin_role(self, interaction: discord.Interaction, role: discord.Role):
+        await self.ensure_db_manager(interaction)
+        await self.db_manager.save_admin_role(role.id)
+
+        embed = discord.Embed(
+            title="設置成功",
+            description=f"已將管理員身分組設為 {role.mention}",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(Set_Category(bot))

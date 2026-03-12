@@ -4,12 +4,14 @@ from discord import app_commands
 import json
 import os
 import logging
+from utils.member_verification_ui import BatchAssignConfirmView
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('MemberVerification')
+
 class MemberVerification(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.data_file = "data/member_roles.json"
+        self.data_file = "config/assign_roles.json"
         self.role_members = self.load_data()
     def load_data(self):
         if os.path.exists(self.data_file):
@@ -124,5 +126,43 @@ class MemberVerification(commands.Cog):
     async def assign_roles_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.errors.MissingPermissions):
             await interaction.response.send_message("你沒有權限執行此命令，此命令只能由管理員使用。", ephemeral=True)
+
+    @app_commands.command(name="batch_assign_role", description="批量給予身分組（管理員）")
+    @app_commands.describe(
+        source_role="持有此身分組的成員",
+        target_role="要給予的身分組（預設：特選老人）"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def batch_assign_role(
+        self, 
+        interaction: discord.Interaction,
+        source_role: discord.Role,
+        target_role: discord.Role = None
+    ):
+        await interaction.response.defer(thinking=True)
+
+        guild = interaction.guild
+
+        if not target_role:
+            target_role = discord.utils.get(guild.roles, name="特選老人")
+            if not target_role:
+                await interaction.followup.send("找不到預設的目標身分組「特選老人」，請指定一個有效的目標身分組。", ephemeral=True)
+                return
+
+        members = source_role.members
+        if not members:
+            await interaction.followup.send(f"沒有任何成員擁有 {source_role.mention} 身分組", ephemeral=True)
+            return
+        
+        view = BatchAssignConfirmView(source_role, target_role, members)
+        embed = view.create_embed()
+        
+        await interaction.followup.send(embed=embed, view=view)
+
+    @batch_assign_role.error
+    async def batch_assign_role_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            await interaction.response.send_message("你沒有權限執行此命令，此命令只能由管理員使用。", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(MemberVerification(bot))
