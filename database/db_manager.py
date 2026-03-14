@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from bot.utils.config_paths import ConfigPaths
 
+
+DEFAULT_VERIFICATION_DATA = {"roles": {}, "users": {}}
+
 class DatabaseManager:
     def __init__(self, guild_id: int, guild_name: str = None):
         self.guild_id = guild_id
@@ -25,7 +28,42 @@ class DatabaseManager:
     def _init_verification_config(self):
         if not os.path.exists(self.verification_json):
             with open(self.verification_json, 'w', encoding='utf-8') as f:
-                json.dump({"roles": {}, "users": {}}, f, ensure_ascii=False, indent=4)
+                json.dump(DEFAULT_VERIFICATION_DATA, f, ensure_ascii=False, indent=4)
+
+    def _load_verification_data(self) -> Dict[str, Any]:
+        needs_repair = False
+
+        try:
+            with open(self.verification_json, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+            needs_repair = True
+
+        if not isinstance(data, dict):
+            data = {}
+            needs_repair = True
+
+        roles = data.get("roles", {})
+        users = data.get("users", {})
+
+        if not isinstance(roles, dict):
+            roles = {}
+            needs_repair = True
+
+        if not isinstance(users, dict):
+            users = {}
+            needs_repair = True
+
+        normalized = {"roles": roles, "users": users}
+        if needs_repair:
+            self._save_verification_data(normalized)
+
+        return normalized
+
+    def _save_verification_data(self, data: Dict[str, Any]):
+        with open(self.verification_json, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
 
     def _init_guild_config(self):
         if not os.path.exists(self.config_json):
@@ -94,8 +132,7 @@ class DatabaseManager:
             return [{"user_id": row[0], "channel_id": row[1], "status": row[2]} for row in rows]
 
     async def save_verification_role(self, user_id: str, role_id: int, role_name: str):
-        with open(self.verification_json, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = self._load_verification_data()
 
         if "users" not in data:
             data["users"] = {}
@@ -107,20 +144,17 @@ class DatabaseManager:
         if role_data not in data["users"][user_id]:
             data["users"][user_id].append(role_data)
 
-        with open(self.verification_json, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        self._save_verification_data(data)
 
     async def get_verification_roles(self, user_id: str = None) -> Dict[str, Any]:
-        with open(self.verification_json, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = self._load_verification_data()
 
         if user_id:
             return data.get("users", {}).get(user_id, [])
         return data
 
     async def get_verification_role(self, user_id: str) -> Optional[int]:
-        with open(self.verification_json, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = self._load_verification_data()
 
         user_roles = data.get("users", {}).get(user_id, [])
         if user_roles:
@@ -133,33 +167,41 @@ class DatabaseManager:
         return await self.get_verification_roles(user_id)
 
     async def get_available_roles(self) -> List[Dict[str, Any]]:
-        with open(self.verification_json, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = self._load_verification_data()
 
         roles = data.get("roles", {})
         role_list = []
         for role_name, role_id in roles.items():
-            role_list.append({"name": role_name, "id": role_id})
+            normalized_role_id = role_id
+            if isinstance(role_id, str):
+                stripped = role_id.strip()
+                if stripped.isdigit():
+                    normalized_role_id = int(stripped)
+                elif stripped == "":
+                    normalized_role_id = None
+
+            if normalized_role_id == 0:
+                normalized_role_id = None
+
+            if normalized_role_id is None or isinstance(normalized_role_id, int):
+                role_list.append({"name": role_name, "id": normalized_role_id})
 
         return role_list
 
     async def get_role_id(self, role_name: str) -> Optional[int]:
-        with open(self.verification_json, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = self._load_verification_data()
 
         return data.get("roles", {}).get(role_name)
 
     async def update_role_id(self, role_name: str, role_id: int):
-        with open(self.verification_json, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = self._load_verification_data()
 
         if "roles" not in data:
             data["roles"] = {}
 
         data["roles"][role_name] = role_id
 
-        with open(self.verification_json, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        self._save_verification_data(data)
 
     def load_guild_settings(self) -> Dict[str, Any]:
         with open(self.config_json, 'r', encoding='utf-8') as f:
