@@ -1,12 +1,11 @@
 {
-  "guild_id": 1255354098870517770,
-  "welcome_channel_id": 1430478788361326692,
+  "guild_id": 0,
+  "welcome_channel_id": 1349295394768556055,
   "ticket_category_id": 1255354098870517771,
   "ticket_panel_channel_id": 1255354098870517773,
   "config_channel_id": 1439964830365913200,
   "support_role_ids": [
-    1430442450152980531,
-    1430447307052290088
+    1352823862143877160
   ],
   "blocked_keywords": [],
   "ticket_categories": [
