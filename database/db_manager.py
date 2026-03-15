@@ -229,6 +229,37 @@ class DatabaseManager:
         config["settings"]["application_category"] = category_id
         self.save_guild_settings(config)
 
+    async def get_channel_id(self, channel_name: str) -> Optional[int]:
+        config = self.load_guild_settings()
+
+        candidates = [
+            config.get("channels", {}).get(channel_name),
+            config.get("channel_ids", {}).get(channel_name),
+            config.get("settings", {}).get(f"{channel_name}_channel"),
+            config.get("settings", {}).get(f"{channel_name}_channel_id"),
+            config.get(f"{channel_name}_channel"),
+            config.get(f"{channel_name}_channel_id"),
+        ]
+
+        for value in candidates:
+            if value in (None, ""):
+                continue
+            try:
+                channel_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if channel_id > 0:
+                return channel_id
+
+        return None
+
+    async def save_channel_id(self, channel_name: str, channel_id: int):
+        config = self.load_guild_settings()
+        if "channels" not in config or not isinstance(config["channels"], dict):
+            config["channels"] = {}
+        config["channels"][channel_name] = int(channel_id)
+        self.save_guild_settings(config)
+
     async def register_bot_created_channel(self, channel_id: int):
         config = self.load_guild_settings()
         if "bot_created_channels" not in config:

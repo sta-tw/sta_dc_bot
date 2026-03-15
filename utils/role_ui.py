@@ -2,7 +2,6 @@ import discord
 from discord.ui import Button, View, Modal, TextInput, Select
 from database.db_manager import DatabaseManager
 from bot.utils.role_helper import get_or_create_role, update_role_id_in_config, get_role_color
-import json
 import asyncio
 
 class Verfication_View(View):
@@ -207,7 +206,7 @@ class RoleSelectionView(View):
             options=[
                 discord.SelectOption(
                     label="應屆特選生",
-                    description="115 特選生選這個",
+                    description="116 特選生選這個",
                     emoji=self.emoji.get('golden_dimond'),
                     value="special_student"
                 ),
@@ -236,7 +235,7 @@ class RoleSelectionView(View):
         selected_role = interaction.data["values"][0]
 
         if selected_role == "special_student":
-            role_name = "115特選生"
+            role_name = "116特選生"
             form = StudentApplicationForm(self.user_id, self, self.bot)
         else:
             role_name = "歷屆特選生"
@@ -292,7 +291,7 @@ class StudentApplicationForm(View):
 
 class StudentApplicationModal(Modal):
     def __init__(self, user_id: int, form_view=None, bot=None):
-        super().__init__(title="115 特選生申請表")
+        super().__init__(title="116 特選生申請表")
         self.user_id = user_id
         self.form_view = form_view
         self.bot = bot
@@ -315,9 +314,9 @@ class StudentApplicationModal(Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         application_data = {
-            "type": "115 特選生",
+            "type": "116 特選生",
             "fields": [
-                {"name": "申請者身份", "value": "115 特選生", "inline": False},
+                {"name": "申請者身份", "value": "116 特選生", "inline": False},
                 {"name": "要申請的身份組", "value": self.role.value, "inline": True},
                 {"name": "證明", "value": self.verify.value, "inline": True}
             ],
@@ -561,15 +560,14 @@ class SubmitApplicationView(View):
                     except:
                         continue
 
-        config = DatabaseManager(interaction.guild.id, interaction.guild.name)
-        with open(config.config_json, "r", encoding="utf-8") as file:
-            admin_id = json.load(file)["roles"]["admin"]
+        support_role_ids = getattr(self.bot.settings, "support_role_ids", []) if self.bot else []
+        support_mentions = []
+        for role_id in support_role_ids:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                support_mentions.append(role.mention)
 
-        if admin_id:
-            admin_role = interaction.guild.get_role(admin_id)
-            mention_text = admin_role.mention if admin_role else "@管理員"
-        else:
-            mention_text = "@管理員"
+        mention_text = " ".join(support_mentions) if support_mentions else "@管理員"
 
         admin_embed = discord.Embed(
             title=f"{self.emoji.get('frog1')} 申請審核面板",
@@ -636,15 +634,42 @@ class ApplicationApprovalView(View):
         available_roles = await db_manager.get_available_roles()
 
         if not available_roles:
+            bot_member = interaction.guild.me
+            top_role = bot_member.top_role if bot_member else None
+            fallback_roles = []
+            for role in sorted(interaction.guild.roles, key=lambda r: r.position, reverse=True):
+                if role.is_default() or role.managed:
+                    continue
+                if top_role and role >= top_role:
+                    continue
+                fallback_roles.append({"name": role.name, "id": role.id})
+
+            available_roles = fallback_roles[:25]
+
+        if not available_roles:
             embed = discord.Embed(
                 title="錯誤",
-                description="找不到任何可用的身份組。請先在 JSON 中設置可用的身份組。",
+                description="找不到任何可用的身份組。請先在 JSON 中設置可用的身份組，或確認機器人有可管理的身份組。",
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        unique_roles = {role["id"]: role for role in available_roles}.values()
+        unique_roles = [
+            role
+            for role in {role["id"]: role for role in available_roles if isinstance(role.get("id"), int)}.values()
+        ]
+
+        if not unique_roles:
+            embed = discord.Embed(
+                title="錯誤",
+                description="可用身份組資料格式錯誤，請檢查 JSON 設定。",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        max_select_values = min(len(unique_roles), 25)
 
         select = Select(
             placeholder="選擇要給予的身份組",
@@ -657,7 +682,7 @@ class ApplicationApprovalView(View):
                 )
                 for role in unique_roles
             ],
-            max_values=len(unique_roles)
+            max_values=max_select_values
         )
         select.callback = self.role_selected_callback
 
@@ -689,7 +714,7 @@ class ApplicationApprovalView(View):
             db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
 
             special_chat_id = await db_manager.get_channel_id(channel_name="special_chat")
-            special_chat = interaction.guild.get_channel(special_chat_id)
+            special_chat = interaction.guild.get_channel(special_chat_id) if special_chat_id else None
 
             await db_manager.update_application_status(self.user_id, "approved")
 
@@ -757,9 +782,14 @@ class ApplicationApprovalView(View):
                 )
                 await main_channel.send(content=user.mention, embed=main_channel_embed)
 
+                next_step_text = (
+                    f"可以前往特選生聊天區閒聊囉! {self.emoji.get('arrow')} {special_chat.mention}"
+                    if special_chat
+                    else "身份組已設定完成。"
+                )
                 instruction_embed = discord.Embed(
                     title="下一步",
-                    description=f"可以前往特選生聊天區閒聊囉! {self.emoji.get('arrow')} {special_chat.mention}",
+                    description=next_step_text,
                     color=discord.Color.yellow()
                 )
                 await main_channel.send(embed=instruction_embed)
@@ -956,8 +986,8 @@ class RejectionReasonModal(Modal):
             await interaction.channel.edit(overwrites=overwrites)
 
             admin_embed = discord.Embed(
-                title="管理員選項",
-                description="請選擇後續操作：",
+                title="手動關閉選項",
+                description="可按下方按鈕手動關閉申請頻道。",
                 color=discord.Color.yellow()
             )
             await interaction.followup.send(embed=admin_embed, view=ReopenView(self.user_id, self.bot))
@@ -970,23 +1000,14 @@ class ReopenView(View):
         self.emoji = bot.emoji
         self.db_manager = None
 
-        reopen_button = Button(
-            label="重新審核",
-            style=discord.ButtonStyle.success,
-            emoji=bot.emoji.get('blue_fire'),
-            custom_id=f"reopen_{user_id}" if user_id != 0 else "reopen_placeholder"
-        )
-        reopen_button.callback = self.reopen_callback
-
         delete_button = Button(
-            label="刪除頻道",
+            label="手動關閉頻道",
             style=discord.ButtonStyle.danger,
             emoji=bot.emoji.get('red_fire'),
             custom_id=f"delete_{user_id}" if user_id != 0 else "delete_placeholder"
         )
         delete_button.callback = self.delete_callback
 
-        self.add_item(reopen_button)
         self.add_item(delete_button)
 
     async def ensure_db_manager(self, interaction: discord.Interaction):
@@ -1002,53 +1023,9 @@ class ReopenView(View):
 
         return self.db_manager
 
-    async def reopen_callback(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            embed = discord.Embed(
-                title="權限不足",
-                description="只有管理員才能重新審核申請。",
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        applicant = interaction.guild.get_member(self.user_id)
-        if applicant:
-            overwrites = interaction.channel.overwrites
-            overwrites[applicant] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            await interaction.channel.edit(overwrites=overwrites)
-
-            db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
-            await db_manager.update_application_status(self.user_id, "pending")
-
-            for child in self.children:
-                child.disabled = True
-            await interaction.response.edit_message(view=self)
-
-            embed = discord.Embed(
-                title="此申請已重新開啟",
-                description=f"{applicant.mention}請重新開始申請",
-                color=discord.Color.green()
-            )
-            await interaction.followup.send(embed=embed)
-
-            selection_embed = discord.Embed(
-                title="身份組申請",
-                description=f"請選擇你的身份 {self.emoji.get('loading1')}",
-                color=discord.Color.blue()
-            )
-            await interaction.channel.send(embed=selection_embed, view=RoleSelectionView(self.user_id, self.bot))
-
     async def delete_callback(self, interaction: discord.Interaction):
 
         await self.ensure_db_manager(interaction)
-
-        if not interaction.user.guild_permissions.administrator:
-            embed = discord.Embed(
-                title="權限不足",
-                description="只有管理員才能刪除申請頻道。",
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         embed = discord.Embed(
             title="頻道即將刪除",
@@ -1104,14 +1081,6 @@ class ReapplyView(View):
     async def close_callback(self, interaction: discord.Interaction):
         await self.extract_user_id_from_interaction(interaction)
 
-        if interaction.user.id != self.user_id and not interaction.user.guild_permissions.administrator:
-            embed = discord.Embed(
-                title="權限不足",
-                description="只有申請人或管理員可以關閉申請頻道。",
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
         db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
         await db_manager.update_application_status(self.user_id, "closed")
 
@@ -1138,8 +1107,8 @@ class ReapplyView(View):
                 await interaction.channel.edit(overwrites=overwrites)
 
                 admin_embed = discord.Embed(
-                    title="管理員選項",
-                    description="請選擇後續操作：",
+                    title="手動關閉選項",
+                    description="可按下方按鈕手動關閉申請頻道。",
                     color=discord.Color.yellow()
                 )
                 await interaction.followup.send(embed=admin_embed, view=ReopenView(self.user_id, self.bot))

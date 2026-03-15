@@ -2,7 +2,6 @@ import discord
 from discord.ui import Button, View, Modal, TextInput
 from database.db_manager import DatabaseManager
 from bot.utils.role_helper import get_or_create_role, update_role_id_in_config, get_role_color
-import json
 import asyncio
 
 class Exchange_View(View):
@@ -170,16 +169,14 @@ class SubmitApplicationView(View):
                     except:
                         continue
 
-        config = DatabaseManager(interaction.guild.id, interaction.guild.name)
-        with open(config.config_json, "r", encoding="utf-8") as file:
-            admin_id = json.load(file)["roles"]["admin"]
+        support_role_ids = getattr(self.bot.settings, "support_role_ids", []) if self.bot else []
+        support_mentions = []
+        for role_id in support_role_ids:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                support_mentions.append(role.mention)
 
-        if admin_id:
-            admin_role = interaction.guild.get_role(admin_id)
-            mention_text = admin_role.mention if admin_role else "@管理員"
-        else:
-            admin_role = discord.utils.get(interaction.guild.roles, name="管理員")
-            mention_text = admin_role.mention if admin_role else "@管理員"
+        mention_text = " ".join(support_mentions) if support_mentions else "@管理員"
 
         admin_embed = discord.Embed(
             title=f"{self.emoji.get('frog1')} 申請審核面板",
@@ -281,13 +278,13 @@ class ApplicationApprovalView(View):
             channel_id = await db_manager.get_channel_id(channel_name="exchange")
             if channel_id:
                 channel = interaction.guild.get_channel(channel_id)
-
-                instruction_embed = discord.Embed(
-                    title="下一步",
-                    description=f"記得到 {self.emoji.get('arrow')} {channel.mention}開啟貼文並上傳你的備審資料喔！",
-                    color=discord.Color.yellow()
-                )
-                await main_channel.send(embed=instruction_embed)
+                if channel:
+                    instruction_embed = discord.Embed(
+                        title="下一步",
+                        description=f"記得到 {self.emoji.get('arrow')} {channel.mention}開啟貼文並上傳你的備審資料喔！",
+                        color=discord.Color.yellow()
+                    )
+                    await main_channel.send(embed=instruction_embed)
 
             close_embed = discord.Embed(
                 title="關閉申請頻道",
