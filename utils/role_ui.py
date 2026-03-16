@@ -4,6 +4,22 @@ from database.db_manager import DatabaseManager
 from bot.utils.role_helper import get_or_create_role, update_role_id_in_config, get_role_color
 import asyncio
 
+
+async def _resolve_user_id(interaction: discord.Interaction) -> int:
+    db = DatabaseManager(interaction.guild.id, interaction.guild.name)
+    await db.init_db()
+    if interaction.channel:
+        uid = await db.get_application_user_by_channel(interaction.channel.id)
+        if uid:
+            return uid
+        parent_id = getattr(interaction.channel, "parent_id", None)
+        if parent_id:
+            uid = await db.get_application_user_by_channel(parent_id)
+            if uid:
+                return uid
+    return 0
+
+
 class Verfication_View(View):
     def __init__(self, bot=None):
         super().__init__(timeout=None)
@@ -217,20 +233,17 @@ class RoleSelectionView(View):
                     value="special_elder"
                 )
             ],
-            custom_id=f"role_select_{user_id}" if user_id != 0 else "role_select_placeholder"
+            custom_id="role_select_identity"
         )
 
         select.callback = self.select_callback
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
-        custom_id = interaction.data.get("custom_id", "")
-        if self.user_id == 0 and custom_id.startswith("role_select_"):
-            try:
-                self.user_id = int(custom_id.split("_")[-1])
-            except (ValueError, IndexError):
-                print(f"無法從 custom_id {custom_id} 中提取用戶 ID")
-                self.user_id = interaction.user.id
+        if self.user_id == 0:
+            self.user_id = await _resolve_user_id(interaction)
+        if self.user_id == 0:
+            self.user_id = interaction.user.id
 
         selected_role = interaction.data["values"][0]
 
@@ -265,19 +278,15 @@ class StudentApplicationForm(View):
             label="點擊此按鈕填寫表單",
             style=discord.ButtonStyle.primary,
             emoji=self.emoji.get('red_light'),
-            custom_id=f"submit_student_form_{user_id}" if user_id != 0 else "submit_student_form_placeholder"
+            custom_id="submit_student_form"
         )
 
         submit_button.callback = self.show_form
         self.add_item(submit_button)
 
     async def show_form(self, interaction: discord.Interaction):
-        custom_id = interaction.data.get("custom_id", "")
-        if self.user_id == 0 and custom_id.startswith("submit_student_form_"):
-            try:
-                self.user_id = int(custom_id.split("_")[-1])
-            except (ValueError, IndexError):
-                self.user_id = interaction.user.id
+        if self.user_id == 0:
+            self.user_id = await _resolve_user_id(interaction)
 
         if interaction.user.id != self.user_id:
             embed = discord.Embed(
@@ -380,19 +389,15 @@ class ElderApplicationForm(View):
             label="點擊此按鈕填寫表單",
             style=discord.ButtonStyle.primary,
             emoji=self.emoji.get('red_light'),
-            custom_id=f"submit_elder_form_{user_id}" if user_id != 0 else "submit_elder_form_placeholder"
+            custom_id="submit_elder_form"
         )
 
         submit_button.callback = self.show_form
         self.add_item(submit_button)
 
     async def show_form(self, interaction: discord.Interaction):
-        custom_id = interaction.data.get("custom_id", "")
-        if self.user_id == 0 and custom_id.startswith("submit_elder_form_"):
-            try:
-                self.user_id = int(custom_id.split("_")[-1])
-            except (ValueError, IndexError):
-                self.user_id = interaction.user.id
+        if self.user_id == 0:
+            self.user_id = await _resolve_user_id(interaction)
 
         if interaction.user.id != self.user_id:
             embed = discord.Embed(
@@ -471,10 +476,10 @@ class ElderApplicationModal(Modal):
                     pass
 
 class SubmitApplicationView(View):
-    def __init__(self, user_id: int, application_data: dict, bot=None):
+    def __init__(self, user_id: int, application_data: dict = None, bot=None):
         super().__init__(timeout=None)
         self.user_id = user_id
-        self.application_data = application_data
+        self.application_data = application_data or {}
         self.bot = bot
         self.emoji = bot.emoji
 
@@ -482,13 +487,16 @@ class SubmitApplicationView(View):
             label="送出申請",
             style=discord.ButtonStyle.success,
             emoji=self.emoji.get('send'),
-            custom_id=f"submit_application_{user_id}"
+            custom_id="submit_application"
         )
         submit_button.callback = self.submit_callback
 
         self.add_item(submit_button)
 
     async def submit_callback(self, interaction: discord.Interaction):
+        if self.user_id == 0:
+            self.user_id = await _resolve_user_id(interaction)
+
         if interaction.user.id != self.user_id:
             embed = discord.Embed(
                 title="權限不足",
@@ -520,7 +528,7 @@ class SubmitApplicationView(View):
             color=discord.Color.yellow()
         )
 
-        for field in self.application_data["fields"]:
+        for field in self.application_data.get("fields", []):
             status_embed.add_field(**field)
 
         status_embed.add_field(
@@ -535,7 +543,12 @@ class SubmitApplicationView(View):
 
         await interaction.followup.send(embed=status_embed)
 
-        thread_name = f"審核-{interaction.user.display_name}-{self.application_data['type']}申請"
+        _db = DatabaseManager(interaction.guild.id, interaction.guild.name)
+        await _db.init_db()
+        await _db.update_application_status(self.user_id, "submitted")
+
+        _app_type = self.application_data.get("type", "未知")
+        thread_name = f"審核-{interaction.user.display_name}-{_app_type}申請"
 
         existing_thread = None
         for thread in interaction.channel.threads:
@@ -573,16 +586,16 @@ class SubmitApplicationView(View):
             title=f"{self.emoji.get('frog1')} 申請審核面板",
             description=(
                 f"**申請者：** {interaction.user.mention}\n"
-                f"**申請者身份：** {self.application_data['type']}\n"
+                f"**申請者身份：** {_app_type}\n"
                 f"**提交時間：** <t:{int(interaction.created_at.timestamp())}:F>\n\n"
             ),
             color=discord.Color.blue()
         )
 
-        for field in self.application_data["admin_fields"]:
+        for field in self.application_data.get("admin_fields", []):
             admin_embed.add_field(**field)
 
-        approval_view = ApplicationApprovalView(self.user_id, self.application_data["type"], self.bot)
+        approval_view = ApplicationApprovalView(self.user_id, _app_type, self.bot)
 
         await thread.send(
             content=f"{mention_text} 有新的申請需要審核！",
@@ -602,7 +615,7 @@ class ApplicationApprovalView(View):
             label="批准",
             style=discord.ButtonStyle.success,
             emoji=self.emoji.get('green_motion'),
-            custom_id=f"approve_{user_id}" if user_id != 0 else "approve_placeholder"
+            custom_id="approve_application"
         )
         approve_button.callback = self.approve_callback
 
@@ -610,7 +623,7 @@ class ApplicationApprovalView(View):
             label="拒絕",
             style=discord.ButtonStyle.danger,
             emoji=self.emoji.get('angry_motion'),
-            custom_id=f"reject_{user_id}" if user_id != 0 else "reject_placeholder"
+            custom_id="reject_application"
         )
         reject_button.callback = self.reject_callback
 
@@ -618,15 +631,9 @@ class ApplicationApprovalView(View):
         self.add_item(reject_button)
 
     async def extract_data_from_interaction(self, interaction: discord.Interaction):
-        custom_id = interaction.data.get("custom_id", "")
-        if self.user_id == 0 and custom_id.startswith(("approve_", "reject_")):
-            try:
-                self.user_id = int(custom_id.split("_")[-1])
-            except (ValueError, IndexError):
-                print(f"無法從 custom_id {custom_id} 中提取用戶 ID")
-                return False
-
-        return True
+        if self.user_id == 0:
+            self.user_id = await _resolve_user_id(interaction)
+        return self.user_id != 0
 
     async def show_role_selection(self, interaction: discord.Interaction):
         db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
@@ -673,7 +680,7 @@ class ApplicationApprovalView(View):
 
         select = Select(
             placeholder="選擇要給予的身份組",
-            custom_id=f"role_select_{self.user_id}",
+            custom_id="admin_role_select",
             options=[
                 discord.SelectOption(
                     label=role["name"],
@@ -911,29 +918,36 @@ class RejectionReasonModal(Modal):
                 color=discord.Color.blue()
             )
 
-            view = View(timeout=None)
+            await main_channel.send(embed=options_embed, view=RejectionOptionsView(self.bot))
 
-            reapply_button = Button(
-                label="重新申請",
-                style=discord.ButtonStyle.primary,
-                custom_id=f"reapply_{self.user_id}"
-            )
-            reapply_button.callback = self.reapply_callback
+class RejectionOptionsView(View):
+    def __init__(self, bot=None):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.emoji = bot.emoji if bot else {}
 
-            close_button = Button(
-                label="取消申請",
-                style=discord.ButtonStyle.danger,
-                custom_id=f"close_{self.user_id}"
-            )
-            close_button.callback = self.close_callback
+        reapply_button = Button(
+            label="重新申請",
+            style=discord.ButtonStyle.primary,
+            custom_id="role_reapply_application"
+        )
+        reapply_button.callback = self.reapply_callback
 
-            view.add_item(reapply_button)
-            view.add_item(close_button)
+        close_button = Button(
+            label="取消申請",
+            style=discord.ButtonStyle.danger,
+            custom_id="role_cancel_application"
+        )
+        close_button.callback = self.close_callback
 
-            await main_channel.send(embed=options_embed, view=view)
+        self.add_item(reapply_button)
+        self.add_item(close_button)
 
     async def reapply_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
+        user_id = await _resolve_user_id(interaction)
+        if user_id == 0:
+            return await interaction.response.send_message("無法確認申請者身份。", ephemeral=True)
+        if interaction.user.id != user_id:
             embed = discord.Embed(
                 title="權限不足",
                 description="只有申請人可以重新申請。",
@@ -942,10 +956,8 @@ class RejectionReasonModal(Modal):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
-        await db_manager.update_application_status(self.user_id, "pending")
+        await db_manager.update_application_status(user_id, "pending")
 
-        for child in interaction.message.components[0].children:
-            child.disabled = True
         await interaction.message.edit(view=None)
 
         selection_embed = discord.Embed(
@@ -953,10 +965,14 @@ class RejectionReasonModal(Modal):
             description=f"請選擇你的身份 {self.emoji.get('loading1')}",
             color=discord.Color.blue()
         )
-        await interaction.response.send_message(embed=selection_embed, view=RoleSelectionView(self.user_id, self.bot))
+        await interaction.response.send_message(embed=selection_embed, view=RoleSelectionView(user_id, self.bot))
 
     async def close_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
+        user_id = await _resolve_user_id(interaction)
+        if user_id == 0:
+            user_id = interaction.user.id
+
+        if interaction.user.id != user_id:
             embed = discord.Embed(
                 title="權限不足",
                 description="只有申請人可以取消申請。",
@@ -965,10 +981,8 @@ class RejectionReasonModal(Modal):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
-        await db_manager.update_application_status(self.user_id, "cancelled")
+        await db_manager.update_application_status(user_id, "cancelled")
 
-        for child in interaction.message.components[0].children:
-            child.disabled = True
         await interaction.message.edit(view=None)
 
         embed = discord.Embed(
@@ -981,8 +995,9 @@ class RejectionReasonModal(Modal):
         await asyncio.sleep(3)
 
         overwrites = interaction.channel.overwrites
-        if interaction.user in overwrites:
-            del overwrites[interaction.user]
+        applicant = interaction.guild.get_member(user_id)
+        if applicant and applicant in overwrites:
+            del overwrites[applicant]
             await interaction.channel.edit(overwrites=overwrites)
 
             admin_embed = discord.Embed(
@@ -990,7 +1005,7 @@ class RejectionReasonModal(Modal):
                 description="可按下方按鈕手動關閉申請頻道。",
                 color=discord.Color.yellow()
             )
-            await interaction.followup.send(embed=admin_embed, view=ReopenView(self.user_id, self.bot))
+            await interaction.followup.send(embed=admin_embed, view=ReopenView(user_id, self.bot))
 
 class ReopenView(View):
     def __init__(self, user_id: int, bot=None):
@@ -1004,7 +1019,7 @@ class ReopenView(View):
             label="手動關閉頻道",
             style=discord.ButtonStyle.danger,
             emoji=bot.emoji.get('red_fire'),
-            custom_id=f"delete_{user_id}" if user_id != 0 else "delete_placeholder"
+            custom_id="delete_application_channel"
         )
         delete_button.callback = self.delete_callback
 
@@ -1050,7 +1065,7 @@ class ReapplyView(View):
             label="關閉申請頻道",
             style=discord.ButtonStyle.danger,
             emoji=self.emoji.get('red_fire'),
-            custom_id=f"close_{user_id}" if user_id != 0 else "close_placeholder"
+            custom_id="close_application_channel"
         )
         close_button.callback = self.close_callback
 
@@ -1060,22 +1075,9 @@ class ReapplyView(View):
         if self.user_id != 0:
             return True
 
-        custom_id = interaction.data.get("custom_id", "")
-        if custom_id.startswith("close_"):
-            try:
-                self.user_id = int(custom_id.split("_")[-1])
-                return True
-            except (ValueError, IndexError):
-                pass
-
-        channel_name = interaction.channel.name if interaction.channel else ""
-        if channel_name.startswith("身份組申請-"):
-            for member in interaction.guild.members:
-                if member.display_name in channel_name:
-                    self.user_id = member.id
-                    return True
-
-        self.user_id = interaction.user.id
+        self.user_id = await _resolve_user_id(interaction)
+        if self.user_id == 0:
+            self.user_id = interaction.user.id
         return True
 
     async def close_callback(self, interaction: discord.Interaction):
@@ -1121,8 +1123,10 @@ def setup_persistent_views_role(bot):
 
         bot.add_view(StudentApplicationForm(0, bot=bot))
         bot.add_view(ElderApplicationForm(0, bot=bot))
+        bot.add_view(SubmitApplicationView(0, bot=bot))
 
         bot.add_view(ApplicationApprovalView(0, "placeholder", bot=bot))
+        bot.add_view(RejectionOptionsView(bot=bot))
 
         bot.add_view(ReopenView(0, bot=bot))
 

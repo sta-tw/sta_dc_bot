@@ -4,6 +4,7 @@ from discord.ext import commands
 from utils.role_button_ui import Gay, Crown, Cat
 import asyncio
 import colorsys
+import aiohttp
 
 def is_admin():
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -62,7 +63,7 @@ class Role_Button(commands.Cog):
                         color=hex_color
                     ))
                     await asyncio.sleep(0.1)
-        except discord.errors.NotFound:
+        except (discord.errors.NotFound, discord.HTTPException, aiohttp.ClientError):
             pass
 
 async def setup(bot):

@@ -110,6 +110,17 @@ class DatabaseManager:
                 return {"channel_id": row[0], "status": row[1]}
             return None
 
+    async def get_application_user_by_channel(self, channel_id: int) -> Optional[int]:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute(
+                '''SELECT user_id FROM application_channels WHERE channel_id = ?''',
+                (channel_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return int(row[0])
+            return None
+
     async def update_application_status(self, user_id: int, status: str):
         async with aiosqlite.connect(self.db_name) as db:
             await db.execute('''

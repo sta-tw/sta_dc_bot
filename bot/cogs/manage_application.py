@@ -141,7 +141,7 @@ class Manage_Application(commands.Cog):
 
         select = discord.ui.Select(
             placeholder="選擇要賦予的身份組",
-            custom_id=f"role_select_{user_id}",
+            custom_id="manage_application_role_select",
             options=[
                 discord.SelectOption(
                     label=role["name"],
