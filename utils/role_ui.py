@@ -522,9 +522,6 @@ class SubmitApplicationView(View):
 
         status_embed = discord.Embed(
             title=f"您的申請正在審核中 {self.emoji.get('loading2')}",
-            description=(
-
-            ),
             color=discord.Color.yellow()
         )
 
