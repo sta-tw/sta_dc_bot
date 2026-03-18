@@ -35,7 +35,7 @@ class Verfication_View(View):
         verify_button.callback = self.verify_callback
 
         apply_button = Button(
-            label="申請身份組",
+            label="申請身分組",
             style=discord.ButtonStyle.success,
             emoji=self.emoji.get('F'),
             custom_id="apply_role"
@@ -66,7 +66,7 @@ class Verfication_View(View):
                     role_id,
                     role_name,
                     get_role_color(role_name),
-                    f"自動創建 {role_name} 身份組"
+                    f"自動創建 {role_name} 身分組"
                 )
 
                 if not role:
@@ -85,27 +85,27 @@ class Verfication_View(View):
             if added_roles:
                 embed = discord.Embed(
                     title="驗證成功",
-                    description=f"已給予您以下身份組：\n- {', '.join(added_roles)}",
+                    description=f"已給予您以下身分組：\n- {', '.join(added_roles)}",
                     color=discord.Color.green()
                 )
 
                 if failed_roles:
                     embed.add_field(
-                        name="以下身份組給予失敗",
+                        name="以下身分組給予失敗",
                         value=f"- {', '.join(failed_roles)}\n請聯繫管理員手動添加。",
                         inline=False
                     )
             else:
                 embed = discord.Embed(
                     title="驗證失敗",
-                    description="您尚未驗證身份，請先申請身份組。",
+                    description="您尚未驗證身份，請先申請身分組。",
                     color=discord.Color.red()
                 )
 
                 if failed_roles:
                     embed.add_field(
                         name="失敗原因",
-                        value=f"找不到或無權限添加以下身份組：\n- {', '.join(failed_roles)}",
+                        value=f"找不到或無權限添加以下身分組：\n- {', '.join(failed_roles)}",
                         inline=False
                     )
         else:
@@ -120,7 +120,7 @@ class Verfication_View(View):
                         role_id,
                         role_name,
                         discord.Color.green(),
-                        f"自動創建 {role_name} 身份組"
+                        f"自動創建 {role_name} 身分組"
                     )
 
                 if role:
@@ -128,25 +128,25 @@ class Verfication_View(View):
                         await interaction.user.add_roles(role)
                         embed = discord.Embed(
                             title="驗證成功",
-                            description=f"已給予您「{role.name}」身份組！",
+                            description=f"已給予您「{role.name}」身分組！",
                             color=discord.Color.green()
                         )
                     except discord.Forbidden:
                         embed = discord.Embed(
                             title="權限錯誤",
-                            description="機器人無法給予該身份組。請聯繫管理員。",
+                            description="機器人無法給予該身分組。請聯繫管理員。",
                             color=discord.Color.red()
                         )
                 else:
                     embed = discord.Embed(
                         title="角色不存在",
-                        description="找不到對應的身份組。請聯繫管理員。",
+                        description="找不到對應的身分組。請聯繫管理員。",
                         color=discord.Color.red()
                     )
             else:
                 embed = discord.Embed(
                     title="驗證失敗",
-                    description="您尚未驗證身份，請先申請身份組。",
+                    description="您尚未驗證身份，請先申請身分組。",
                     color=discord.Color.red()
                 )
 
@@ -185,7 +185,7 @@ class Verfication_View(View):
         if mod_role:
             overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-        channel_name = f"身份組申請-{interaction.user.display_name}"
+        channel_name = f"身分組申請-{interaction.user.display_name}"
         channel = await interaction.guild.create_text_channel(
             name=channel_name,
             overwrites=overwrites,
@@ -196,7 +196,7 @@ class Verfication_View(View):
         await db_manager.save_application_channel(interaction.user.id, channel.id)
 
         embed = discord.Embed(
-            title="身份組申請",
+            title="身分組申請",
             description=f"歡迎 {interaction.user.mention}！\n請選擇你的身份 {self.emoji.get('loading1')}",
             color=discord.Color.blue()
         )
@@ -205,7 +205,7 @@ class Verfication_View(View):
 
         embed = discord.Embed(
             title="申請頻道已建立",
-            description=f"你的身份組申請頻道已建立 {self.emoji.get('arrow')} {channel.mention}",
+            description=f"你的身分組申請頻道已建立 {self.emoji.get('arrow')} {channel.mention}",
             color=discord.Color.green()
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -307,7 +307,7 @@ class StudentApplicationModal(Modal):
         self.emoji = bot.emoji
 
         self.role = TextInput(
-            label="想要申請哪些身份組",
+            label="想要申請哪些身分組",
             placeholder="資工系、不分系、資工+不分、等等",
             required=True
         )
@@ -326,12 +326,12 @@ class StudentApplicationModal(Modal):
             "type": "116 特選生",
             "fields": [
                 {"name": "申請者身份", "value": "116 特選生", "inline": False},
-                {"name": "要申請的身份組", "value": self.role.value, "inline": True},
+                {"name": "要申請的身分組", "value": self.role.value, "inline": True},
                 {"name": "證明", "value": self.verify.value, "inline": True}
             ],
             "admin_fields": [
                 {
-                    "name": "要申請的身份組",
+                    "name": "要申請的身分組",
                     "value": self.role.value,
                     "inline": False
                 },
@@ -653,7 +653,7 @@ class ApplicationApprovalView(View):
         if not available_roles:
             embed = discord.Embed(
                 title="錯誤",
-                description="找不到任何可用的身份組。請先在 JSON 中設置可用的身份組，或確認機器人有可管理的身份組。",
+                description="找不到任何可用的身分組。請先在 JSON 中設置可用的身分組，或確認機器人有可管理的身分組。",
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -667,7 +667,7 @@ class ApplicationApprovalView(View):
         if not unique_roles:
             embed = discord.Embed(
                 title="錯誤",
-                description="可用身份組資料格式錯誤，請檢查 JSON 設定。",
+                description="可用身分組資料格式錯誤，請檢查 JSON 設定。",
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -676,13 +676,13 @@ class ApplicationApprovalView(View):
         max_select_values = min(len(unique_roles), 25)
 
         select = Select(
-            placeholder="選擇要給予的身份組",
+            placeholder="選擇要給予的身分組",
             custom_id="admin_role_select",
             options=[
                 discord.SelectOption(
                     label=role["name"],
                     value=str(role["id"]),
-                    description=f"賦予 {role['name']} 身份組"
+                    description=f"賦予 {role['name']} 身分組"
                 )
                 for role in unique_roles
             ],
@@ -694,8 +694,8 @@ class ApplicationApprovalView(View):
         view.add_item(select)
 
         embed = discord.Embed(
-            title="選擇身份組",
-            description="請選擇要給予的身份組（可複選）：",
+            title="選擇身分組",
+            description="請選擇要給予的身分組（可複選）：",
             color=discord.Color.blue()
         )
 
@@ -735,7 +735,7 @@ class ApplicationApprovalView(View):
                         role_id,
                         role_name,
                         get_role_color(role_name),
-                        f"自動創建 {role_name} 身份組"
+                        f"自動創建 {role_name} 身分組"
                     )
 
                 if not role:
@@ -755,14 +755,14 @@ class ApplicationApprovalView(View):
 
             if added_roles:
                 thread_embed.add_field(
-                    name="已給予的身份組",
+                    name="已給予的身分組",
                     value="\n".join(added_roles),
                     inline=False
                 )
 
             if failed_roles:
                 thread_embed.add_field(
-                    name="給予失敗的身份組",
+                    name="給予失敗的身分組",
                     value="\n".join(failed_roles),
                     inline=False
                 )
@@ -789,7 +789,7 @@ class ApplicationApprovalView(View):
                 next_step_text = (
                     f"可以前往特選生聊天區閒聊囉! {self.emoji.get('arrow')} {special_chat.mention}"
                     if special_chat
-                    else "身份組已設定完成。"
+                    else "身分組已設定完成。"
                 )
                 instruction_embed = discord.Embed(
                     title="下一步",
@@ -808,7 +808,7 @@ class ApplicationApprovalView(View):
         except Exception as e:
             error_embed = discord.Embed(
                 title="錯誤",
-                description=f"設定身份組時發生錯誤: {str(e)}",
+                description=f"設定身分組時發生錯誤: {str(e)}",
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
@@ -958,7 +958,7 @@ class RejectionOptionsView(View):
         await interaction.message.edit(view=None)
 
         selection_embed = discord.Embed(
-            title="身份組申請",
+            title="身分組申請",
             description=f"請選擇你的身份 {self.emoji.get('loading1')}",
             color=discord.Color.blue()
         )

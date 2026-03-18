@@ -93,7 +93,7 @@ class Manage_Application(commands.Cog):
 
         if is_bot_channel:
             channel = interaction.guild.get_channel(channel_id)
-            if channel and channel.name.startswith("身份組申請-"):
+            if channel and channel.name.startswith("身分組申請-"):
                 return True
 
             for member in interaction.guild.members:
@@ -112,7 +112,7 @@ class Manage_Application(commands.Cog):
                 return member
 
         channel = interaction.guild.get_channel(channel_id)
-        if channel and channel.name.startswith("身份組申請-"):
+        if channel and channel.name.startswith("身分組申請-"):
             user_display_name = channel.name[6:]
 
             for member in interaction.guild.members:
@@ -140,13 +140,13 @@ class Manage_Application(commands.Cog):
             return
 
         select = discord.ui.Select(
-            placeholder="選擇要賦予的身份組",
+            placeholder="選擇要賦予的身分組",
             custom_id="manage_application_role_select",
             options=[
                 discord.SelectOption(
                     label=role["name"],
                     value=role["name"],
-                    description=f"賦予 {role['name']} 身份組" + (" (將自動創建)" if role["id"] is None else "")
+                    description=f"賦予 {role['name']} 身分組" + (" (將自動創建)" if role["id"] is None else "")
                 )
                 for role in available_roles
             ],
@@ -187,7 +187,7 @@ class Manage_Application(commands.Cog):
                         role_id,
                         role_name,
                         get_role_color(role_name),
-                        f"自動創建 {role_name} 身份組"
+                        f"自動創建 {role_name} 身分組"
                     )
 
                     if not role:
@@ -211,14 +211,14 @@ class Manage_Application(commands.Cog):
 
                 if added_roles:
                     embed.add_field(
-                        name="已設置的身份組",
+                        name="已設置的身分組",
                         value="\n".join(added_roles),
                         inline=False
                     )
 
                 if failed_roles:
                     embed.add_field(
-                        name="設置失敗的身份組",
+                        name="設置失敗的身分組",
                         value="\n".join(failed_roles),
                         inline=False
                     )
@@ -237,14 +237,14 @@ class Manage_Application(commands.Cog):
 
                         if added_roles:
                             channel_embed.add_field(
-                                name="已設置的身份組",
+                                name="已設置的身分組",
                                 value="\n".join(added_roles),
                                 inline=False
                             )
 
                         instruction_embed = discord.Embed(
                             title="下一步",
-                            description="請回到機器人的驗證按鈕處點擊「驗證身份」按鈕來獲取您的身份組。",
+                            description="請回到機器人的驗證按鈕處點擊「驗證身份」按鈕來獲取您的身分組。",
                             color=discord.Color.blue()
                         )
 
@@ -252,7 +252,7 @@ class Manage_Application(commands.Cog):
                         await channel.send(embed=instruction_embed)
 
             except Exception as e:
-                await select_interaction.followup.send(f"設置身份組時發生錯誤: {str(e)}", ephemeral=True)
+                await select_interaction.followup.send(f"設置身分組時發生錯誤: {str(e)}", ephemeral=True)
 
         select.callback = role_select_callback
 
@@ -261,7 +261,7 @@ class Manage_Application(commands.Cog):
 
         embed = discord.Embed(
             title="批准申請",
-            description=f"請選擇要賦予給申請者的身份組（可複選）：",
+            description=f"請選擇要賦予給申請者的身分組（可複選）：",
             color=discord.Color.blue()
         )
 

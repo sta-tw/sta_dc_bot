@@ -267,7 +267,7 @@ class ApplicationApprovalView(View):
                 await user.add_roles(role)
 
         embed = discord.Embed(
-                title="已給予交換備審身份組",
+            title="已給予交換備審身分組",
                 description=f"{interaction.user.mention} 已批准此申請。",
                 color=discord.Color.green()
             )

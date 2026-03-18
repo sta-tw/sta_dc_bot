@@ -53,8 +53,8 @@ class Delete_Channel(commands.Cog):
                 application_owner_id = member.id
                 break
 
-        if not channel_data and (interaction.channel.name.startswith("身份組申請-") or interaction.channel.name.startswith("交換備審申請-")):
-            prefix = "身份組申請-" if interaction.channel.name.startswith("身份組申請-") else "交換備審申請-"
+        if not channel_data and (interaction.channel.name.startswith("身分組申請-") or interaction.channel.name.startswith("交換備審申請-")):
+            prefix = "身分組申請-" if interaction.channel.name.startswith("身分組申請-") else "交換備審申請-"
             user_display_name = interaction.channel.name[len(prefix):]
 
             for member in interaction.guild.members:

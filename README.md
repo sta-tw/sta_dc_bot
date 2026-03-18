@@ -16,14 +16,14 @@ readme by claude
 - `/ticket refresh`：清空客服面板頻道的歷史訊息。
 
 ### 身份驗證系統
-- `/role_setup`：建立身份驗證面板（「驗證身份」與「申請身份組」兩個按鈕）。
-- 驗證身份：已批准用戶一鍵取回先前核准的身份組。
-- 申請身份組：新用戶提交申請表單，選擇應屆特選生或特選老人，系統自動建立私密申請頻道。
-- `/manage_application`：管理員批准、拒絕或關閉申請，可選擇賦予的身份組。
+- `/role_setup`：建立身份驗證面板（「驗證身份」與「申請身分組」兩個按鈕）。
+- 驗證身份：已批准用戶一鍵取回先前核准的身分組。
+- 申請身分組：新用戶提交申請表單，選擇應屆特選生或特選老人，系統自動建立私密申請頻道。
+- `/manage_application`：管理員批准、拒絕或關閉申請，可選擇賦予的身分組。
 
 ### 其他工具
 - `/exchange_setup`：建立交換備審申請面板。
-- `/role_button`：建立可領取身份組的按鈕面板（Gay / Crown / Cat 類型）。
+- `/role_button`：建立可領取身分組的按鈕面板（Gay / Crown / Cat 類型）。
 - `/set_category` / `/set_current_category`：設定申請頻道所屬分類。
 - `/delete_channel`：刪除機器人建立的頻道。
 - `/assign_roles`：依據 JSON 檔案批次分配身分組（管理員）。
@@ -73,13 +73,13 @@ readme by claude
 
 | 路徑 | 用途 |
 |---|---|
-| `config/guilds/{guild_id}/verification.json` | 可用身份組清單與已驗證用戶 |
+| `config/guilds/{guild_id}/verification.json` | 可用身分組清單與已驗證用戶 |
 | `config/guilds/{guild_id}/settings.json` | 申請分類頻道 ID、機器人建立的頻道列表 |
 | `data/database/{guild_id}.db` | SQLite，儲存申請頻道資訊與狀態 |
 | `config/emoji.json` | 自訂 Discord Emoji 對應表 |
 
 首次使用前請確認：
-1. 在 `config/guilds/{guild_id}/verification.json` 中設定可用身份組。
+1. 在 `config/guilds/{guild_id}/verification.json` 中設定可用身分組。
 2. 使用 `/role_setup` 建立身份驗證面板。
 3. 管理員透過 `/manage_application` 在申請頻道中審核申請。
 

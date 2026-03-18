@@ -11,7 +11,7 @@ class Gay(View):
         self.db_manager = None
 
         role_button = Button(
-            label="拿 Gay 身份組",
+            label="拿 Gay 身分組",
             style=discord.ButtonStyle.success,
             emoji=self.emoji.get('heart1'),
             custom_id="get_gay_role"
@@ -42,13 +42,13 @@ class Gay(View):
             role_id,
             role_name,
             get_role_color("gay"),
-            f"自動創建 {role_name} 身份組"
+            f"自動創建 {role_name} 身分組"
         )
 
         if not role:
             embed = discord.Embed(
-                title="身份組創建失敗",
-                description="機器人沒有權限創建身份組，請聯絡管理員。",
+                title="身分組創建失敗",
+                description="機器人沒有權限創建身分組，請聯絡管理員。",
                 color=discord.Color.red()
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -59,15 +59,15 @@ class Gay(View):
         if role in interaction.user.roles:
             await interaction.user.remove_roles(role)
             embed = discord.Embed(
-                title="身份組已移除",
-                description=f"已移除 {role.mention} 身份組。",
+                title="身分組已移除",
+                description=f"已移除 {role.mention} 身分組。",
                 color=discord.Color.red()
             )
         else:
             await interaction.user.add_roles(role)
             embed = discord.Embed(
-                title="身份組已取得",
-                description=f"已取得 {role.mention} 身份組。",
+                title="身分組已取得",
+                description=f"已取得 {role.mention} 身分組。",
                 color=discord.Color.green()
             )
 
@@ -81,7 +81,7 @@ class Crown(View):
         self.db_manager = None
 
         role_button = Button(
-            label="拿 Crown 身份組",
+            label="拿 Crown 身分組",
             style=discord.ButtonStyle.success,
             emoji=self.emoji.get('crown1'),
             custom_id="get_crown_role"
@@ -112,13 +112,13 @@ class Crown(View):
             role_id,
             role_name,
             get_role_color("crown"),
-            f"自動創建 {role_name} 身份組"
+            f"自動創建 {role_name} 身分組"
         )
 
         if not role:
             embed = discord.Embed(
-                title="身份組創建失敗",
-                description="機器人沒有權限創建身份組，請聯絡管理員。",
+                title="身分組創建失敗",
+                description="機器人沒有權限創建身分組，請聯絡管理員。",
                 color=discord.Color.red()
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -129,15 +129,15 @@ class Crown(View):
         if role in interaction.user.roles:
             await interaction.user.remove_roles(role)
             embed = discord.Embed(
-                title="身份組已移除",
-                description=f"已移除 {role.mention} 身份組。",
+                title="身分組已移除",
+                description=f"已移除 {role.mention} 身分組。",
                 color=discord.Color.red()
             )
         else:
             await interaction.user.add_roles(role)
             embed = discord.Embed(
-                title="身份組已取得",
-                description=f"已取得 {role.mention} 身份組。",
+                title="身分組已取得",
+                description=f"已取得 {role.mention} 身分組。",
                 color=discord.Color.green()
             )
 
@@ -151,7 +151,7 @@ class Cat(View):
         self.db_manager = None
 
         role_button = Button(
-            label="拿 Cat 身份組",
+            label="拿 Cat 身分組",
             style=discord.ButtonStyle.success,
             emoji=self.emoji.get('cat0'),
             custom_id="get_cat_role"
@@ -182,13 +182,13 @@ class Cat(View):
             role_id,
             role_name,
             get_role_color("cat"),
-            f"自動創建 {role_name} 身份組"
+            f"自動創建 {role_name} 身分組"
         )
 
         if not role:
             embed = discord.Embed(
-                title="身份組創建失敗",
-                description="機器人沒有權限創建身份組，請聯絡管理員。",
+                title="身分組創建失敗",
+                description="機器人沒有權限創建身分組，請聯絡管理員。",
                 color=discord.Color.red()
             )
             return await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -199,15 +199,15 @@ class Cat(View):
         if role in interaction.user.roles:
             await interaction.user.remove_roles(role)
             embed = discord.Embed(
-                title="身份組已移除",
-                description=f"已移除 {role.mention} 身份組。",
+                title="身分組已移除",
+                description=f"已移除 {role.mention} 身分組。",
                 color=discord.Color.red()
             )
         else:
             await interaction.user.add_roles(role)
             embed = discord.Embed(
-                title="身份組已取得",
-                description=f"已取得 {role.mention} 身份組。",
+                title="身分組已取得",
+                description=f"已取得 {role.mention} 身分組。",
                 color=discord.Color.green()
             )
 

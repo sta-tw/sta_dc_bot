@@ -9,17 +9,17 @@ async def get_or_create_role(
     role_id: Optional[int],
     role_name: str,
     color: discord.Color = discord.Color.default(),
-    reason: str = "自動創建身份組"
+    reason: str = "自動創建身分組"
 ) -> Optional[discord.Role]:
     if role_id:
         role = guild.get_role(role_id)
         if role:
             return role
-        logger.warning(f"找不到身份組 ID {role_id}，嘗試按名稱查找...")
+        logger.warning(f"找不到身分組 ID {role_id}，嘗試按名稱查找...")
 
     role = discord.utils.get(guild.roles, name=role_name)
     if role:
-        logger.info(f"找到現有身份組: {role_name} (ID: {role.id})")
+        logger.info(f"找到現有身分組: {role_name} (ID: {role.id})")
         return role
 
     try:
@@ -28,13 +28,13 @@ async def get_or_create_role(
             color=color,
             reason=reason
         )
-        logger.info(f"已自動創建身份組: {role_name} (ID: {role.id})")
+        logger.info(f"已自動創建身分組: {role_name} (ID: {role.id})")
         return role
     except discord.Forbidden:
-        logger.error(f"沒有權限創建身份組: {role_name}")
+        logger.error(f"沒有權限創建身分組: {role_name}")
         return None
     except discord.HTTPException as e:
-        logger.error(f"創建身份組失敗: {role_name}, 錯誤: {e}")
+        logger.error(f"創建身分組失敗: {role_name}, 錯誤: {e}")
         return None
 
 async def update_role_id_in_config(

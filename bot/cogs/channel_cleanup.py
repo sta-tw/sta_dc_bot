@@ -40,7 +40,7 @@ class ChannelCleanup(commands.Cog):
                 await db.update_application_status(app["user_id"], "expired")
                 continue
 
-            if not channel.name.startswith("身份組申請-"):
+            if not channel.name.startswith("身分組申請-"):
                 continue
 
             age_hours = (now - channel.created_at).total_seconds() / 3600
