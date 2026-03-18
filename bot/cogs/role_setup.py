@@ -20,7 +20,7 @@ class Role_Setup(commands.Cog):
 
         embed = discord.Embed(
             title=f"{self.emoji.get('!')} 身份驗證",
-            description=f"請選擇您需要的操作：\n\n{self.emoji.get('verify_check')} **驗證身份** - 已驗證過的老人或應屆特選生點擊取得身份組\n\n{self.emoji.get('F')} **申請身份組** - 尚未驗證過的老人或應屆特選生按 F 進入申請",
+            description=f"請選擇您需要的操作：\n\n{self.emoji.get('verify_check')} **驗證身份** - 已驗證過的老人或應屆特選生點擊取得身分組\n\n{self.emoji.get('F')} **申請身分組** - 尚未驗證過的老人或應屆特選生按 F 進入申請",
             color=discord.Color.blue()
         )
 

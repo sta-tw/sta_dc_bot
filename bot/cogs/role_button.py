@@ -22,7 +22,7 @@ class Role_Button(commands.Cog):
         app_commands.Choice(name="Cat", value="cat")
     ]
 
-    @app_commands.command(name="role_button", description="建立領取身份組按鈕")
+    @app_commands.command(name="role_button", description="建立領取身分組按鈕")
     @app_commands.choices(category=role_choices)
     @is_admin()
     async def setup_buttonss(self, interaction: discord.Interaction, category: str):
