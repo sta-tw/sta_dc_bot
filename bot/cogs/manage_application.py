@@ -198,8 +198,11 @@ class Manage_Application(commands.Cog):
                         await update_role_id_in_config(db_manager, role_name, role.id)
 
                     try:
+                        await applicant.add_roles(role, reason="申請審核通過，自動發放身分組")
                         await db_manager.save_verification_role(str(user_id), role.id, role.name)
                         added_roles.append(role.mention)
+                    except discord.Forbidden:
+                        failed_roles.append(f"{role.name} (無法賦予，請檢查機器人權限)")
                     except Exception as e:
                         failed_roles.append(f"{role.name} ({str(e)})")
 
@@ -244,7 +247,7 @@ class Manage_Application(commands.Cog):
 
                         instruction_embed = discord.Embed(
                             title="下一步",
-                            description="請回到機器人的驗證按鈕處點擊「驗證身份」按鈕來獲取您的身分組。",
+                            description="審核已完成，身分組已直接發放。",
                             color=discord.Color.blue()
                         )
 

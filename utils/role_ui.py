@@ -742,8 +742,11 @@ class ApplicationApprovalView(View):
                     failed_roles.append(f"ID: {role_id} (創建失敗)")
                     continue
                 try:
+                    await user.add_roles(role, reason="申請審核通過，自動發放身分組")
                     await db_manager.save_verification_role(str(self.user_id), role.id, role.name)
                     added_roles.append(role.mention)
+                except discord.Forbidden:
+                    failed_roles.append(f"{role.name} (無法賦予，請檢查機器人權限)")
                 except Exception as e:
                     failed_roles.append(f"{role.name} ({str(e)})")
 
