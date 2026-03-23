@@ -41,7 +41,8 @@
     "bot.cogs.set_category",
     "bot.cogs.exchange_setup",
     "bot.cogs.role_button",
-    "bot.cogs.member_verification"
+    "bot.cogs.member_verification",
+    "bot.cogs.emoji"
   ],
   "faq_content": "",
   "llm": {
