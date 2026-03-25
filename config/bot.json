@@ -42,7 +42,8 @@
     "bot.cogs.exchange_setup",
     "bot.cogs.role_button",
     "bot.cogs.member_verification",
-    "bot.cogs.emoji"
+    "bot.cogs.emoji",
+    "bot.cogs.repeater"
   ],
   "faq_content": "",
   "llm": {
