@@ -43,7 +43,8 @@
     "bot.cogs.role_button",
     "bot.cogs.member_verification",
     "bot.cogs.emoji",
-    "bot.cogs.repeater"
+    "bot.cogs.repeater",
+    "bot.cogs.ai_chat"
   ],
   "faq_content": "",
   "llm": {
