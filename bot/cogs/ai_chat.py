@@ -11,6 +11,8 @@ from discord.ext import commands
 
 
 class AiChat(commands.Cog):
+    MASS_MENTION_TOKENS: tuple[str, str] = ("@everyone", "@here")
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.api_key = (os.getenv("VLLM_API_KEY") or "").strip()
@@ -52,6 +54,12 @@ class AiChat(commands.Cog):
     def _build_user_prompt(self, message: discord.Message, cleaned_user_text: str, context_lines: list[str]) -> str:
         context_text = "\n".join(context_lines) if context_lines else self.no_context_text
         return self.user_prompt_template.format(context=context_text, user_input=cleaned_user_text)
+
+    def _sanitize_mass_mentions(self, text: str) -> str:
+        sanitized = text
+        sanitized = re.sub(r"@everyone", "@ everyone", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"@here", "@ here", sanitized, flags=re.IGNORECASE)
+        return sanitized
 
     async def _collect_context(self, message: discord.Message) -> list[str]:
         context_messages: list[discord.Message] = []
@@ -131,6 +139,8 @@ class AiChat(commands.Cog):
             content = (content or "").strip()
             if not content:
                 content = self.empty_reply_text
+
+            content = self._sanitize_mass_mentions(content)
 
             if len(content) > self.max_reply_chars:
                 content = content[: self.max_reply_chars - 1] + "…"
