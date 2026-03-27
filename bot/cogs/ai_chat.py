@@ -33,12 +33,14 @@ class AiChat(commands.Cog):
         self.temperature = max(0.0, min(2.0, float(os.getenv("VLLM_TEMPERATURE") or "0.7")))
         self.max_tokens = max(50, int(os.getenv("VLLM_MAX_TOKENS") or "512"))
         self.rate_limit_cooldown = max(5, int(os.getenv("VLLM_RATE_LIMIT_COOLDOWN") or "60"))
+        self.s2t_enabled = (os.getenv("VLLM_S2T_ENABLED") or "1").strip() == "1"
         self.memory_enabled = (os.getenv("VLLM_MEMORY_ENABLED") or "1").strip() == "1"
         self.memory_top_k = max(1, int(os.getenv("VLLM_MEMORY_TOP_K") or "3"))
         self.memory_collection_name = (os.getenv("VLLM_MEMORY_COLLECTION") or "ai_chat_memory").strip()
         self.memory_dir = Path((os.getenv("VLLM_MEMORY_DIR") or "data/chroma").strip())
         self._rate_limited_until = 0.0
         self.memory_collection = None
+        self.s2t_converter = self._init_s2t_converter() if self.s2t_enabled else None
 
         self.client: OpenAI | None = None
         has_required_config = all(
@@ -61,6 +63,9 @@ class AiChat(commands.Cog):
         else:
             self.bot.logger.warning("AiChat disabled: missing required VLLM_* environment variables")
 
+        if self.s2t_enabled and self.s2t_converter is None:
+            self.bot.logger.warning("AiChat s2t disabled: opencc is not installed")
+
         if self.memory_enabled:
             self._init_memory_store()
 
@@ -74,6 +79,13 @@ class AiChat(commands.Cog):
         except Exception as exc:
             self.memory_collection = None
             self.bot.logger.warning("AiChat memory init failed: %s", exc)
+
+    def _init_s2t_converter(self):
+        try:
+            opencc_module = importlib.import_module("opencc")
+            return opencc_module.OpenCC("s2t")
+        except Exception:
+            return None
 
     def _build_user_prompt(
         self,
@@ -261,6 +273,9 @@ class AiChat(commands.Cog):
             content = (content or "").strip()
             if not content:
                 content = self.empty_reply_text
+
+            if self.s2t_converter is not None:
+                content = self.s2t_converter.convert(content)
 
             content = self._sanitize_mass_mentions(content)
 
