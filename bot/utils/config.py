@@ -53,6 +53,11 @@ class Settings:
     llm_max_sentences: int = 3
     llm_api_keys: list[str] = field(default_factory=list)
     config_channel_id: int | None = None
+    starboard_channel_id: int | None = None
+    starboard_min_reactions: int = 3
+    starboard_emoji: str = "⭐"
+    repeater_filtered_category_ids: list[int] = field(default_factory=list)
+    repeater_filtered_response: str = "#拒絕電神崇拜，從你我做起"
     config_path: Path | None = None
 
     @classmethod
@@ -86,6 +91,17 @@ class Settings:
             if isinstance(key, str) and key.strip()
         ]
         config_channel_id = int(data.get("config_channel_id", 0)) or None
+        starboard_channel_id = int(data.get("starboard_channel_id", 0)) or None
+        starboard_min_reactions = max(1, int(data.get("starboard_min_reactions", 3)))
+        starboard_emoji = str(data.get("starboard_emoji", "⭐")).strip() or "⭐"
+        repeater_filtered_category_ids = [
+            int(category_id)
+            for category_id in data.get("repeater_filtered_category_ids", [])
+            if str(category_id).strip()
+        ]
+        repeater_filtered_response = str(
+            data.get("repeater_filtered_response", "#拒絕電神崇拜，從你我做起")
+        ).strip() or "#拒絕電神崇拜，從你我做起"
         prompt_config = PromptConfig.from_env()
 
         return cls(
@@ -104,6 +120,11 @@ class Settings:
             llm_max_sentences=max(1, llm_max_sentences),
             llm_api_keys=llm_api_keys,
             config_channel_id=config_channel_id,
+            starboard_channel_id=starboard_channel_id,
+            starboard_min_reactions=starboard_min_reactions,
+            starboard_emoji=starboard_emoji,
+            repeater_filtered_category_ids=repeater_filtered_category_ids,
+            repeater_filtered_response=repeater_filtered_response,
             config_path=path.resolve(),
         )
 

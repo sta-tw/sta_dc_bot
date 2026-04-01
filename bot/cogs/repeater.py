@@ -1,19 +1,41 @@
 from __future__ import annotations
+import asyncio
 from dataclasses import dataclass
+from time import monotonic
+
 import discord
 from discord.ext import commands
+
+
 @dataclass
 class RepeatState:
     content: str | None = None
     streak: int = 0
-    echoed_content: str | None = None
+    last_echo_at: float = 0.0
 
 
 class Repeater(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._states: dict[int, RepeatState] = {}
+        self._channel_locks: dict[int, asyncio.Lock] = {}
         self._warned_empty_content = False
+        self._echo_cooldown_seconds = 3.0
+
+    def _get_channel_lock(self, channel_id: int) -> asyncio.Lock:
+        lock = self._channel_locks.get(channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._channel_locks[channel_id] = lock
+        return lock
+
+    def _get_parent_category_id(self, message: discord.Message) -> int | None:
+        channel = message.channel
+        if isinstance(channel, discord.TextChannel):
+            return channel.category_id
+        if isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
+            return channel.parent.category_id
+        return None
 
     async def _extract_repeat_text(self, message: discord.Message) -> str:
         content = (message.content or "").strip()
@@ -46,18 +68,35 @@ class Repeater(commands.Cog):
             return
 
         channel_id = message.channel.id
-        state = self._states.setdefault(channel_id, RepeatState())
+        lock = self._get_channel_lock(channel_id)
 
-        if state.content == content:
-            state.streak += 1
-        else:
-            state.content = content
-            state.streak = 1
+        async with lock:
+            state = self._states.setdefault(channel_id, RepeatState())
 
-        if state.streak >= 3 and state.echoed_content != content:
+            if state.content == content:
+                state.streak += 1
+            else:
+                state.content = content
+                state.streak = 1
+
+            if state.streak < 3:
+                return
+
+            now = monotonic()
+            if now - state.last_echo_at < self._echo_cooldown_seconds:
+                return
+
+            category_id = self._get_parent_category_id(message)
+            filtered_category_ids = set(self.bot.settings.repeater_filtered_category_ids)
+            if category_id in filtered_category_ids:
+                send_text = self.bot.settings.repeater_filtered_response
+            else:
+                send_text = content
+
             try:
-                await message.channel.send(content)
-                state.echoed_content = content
+                await message.channel.send(send_text)
+                state.last_echo_at = now
+                state.streak = 0
             except discord.HTTPException as exc:
                 self.bot.logger.warning("復讀機發送失敗(channel=%s): %s", channel_id, exc)
 

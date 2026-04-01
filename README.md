@@ -24,6 +24,7 @@ readme by claude
 ### 其他工具
 - `/exchange_setup`：建立交換備審申請面板。
 - `/role_button`：建立可領取身分組的按鈕面板（Gay / Crown / Cat 類型）。
+- 爆言功能：當同一則訊息累積 `⭐`（預設 3 位非機器人使用者）會自動轉發到固定爆言頻道。
 - `/set_category` / `/set_current_category`：設定申請頻道所屬分類。
 - `/delete_channel`：刪除機器人建立的頻道。
 - `/assign_roles`：依據 JSON 檔案批次分配身分組（管理員）。
@@ -59,6 +60,9 @@ readme by claude
    | `welcome_channel_id` | 歡迎訊息頻道 ID |
    | `ticket_category_id` | 客服單所屬分類頻道 ID |
    | `ticket_panel_channel_id` | 顯示客服面板的文字頻道 ID |
+   | `starboard_channel_id` | 爆言功能的目標文字頻道 ID（設 `0` 表示停用） |
+   | `starboard_min_reactions` | 觸發爆言所需反應人數（預設 `3`） |
+   | `starboard_emoji` | 觸發爆言的 emoji（預設 `⭐`） |
    | `support_role_ids` | 擁有客服權限的身分組 ID 陣列 |
    | `transcript_dir` | 客服紀錄儲存路徑 |
    | `ticket_categories` | 面板可選分類（`label`、`value`、`channel_prefix`） |

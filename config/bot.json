@@ -4,8 +4,13 @@
   "ticket_category_id": 1255354098870517771,
   "ticket_panel_channel_id": 1255354098870517773,
   "config_channel_id": 1439964830365913200,
+  "starboard_channel_id": 1255355900353314879,
+  "starboard_min_reactions": 3,
+  "starboard_emoji": "⭐",
+  "repeater_filtered_category_ids": [1430114754462089326],
+  "repeater_filtered_response": "#   拒絕電神崇拜，從你我做起",
   "support_role_ids": [
-    1352823862143877160
+    1355459553042632744
   ],
   "blocked_keywords": [],
   "ticket_categories": [
@@ -44,6 +49,7 @@
     "bot.cogs.member_verification",
     "bot.cogs.emoji",
     "bot.cogs.repeater",
+    "bot.cogs.starboard",
     "bot.cogs.ai_chat"
   ],
   "faq_content": "",
