@@ -58,6 +58,9 @@ class Settings:
     starboard_emoji: str = "⭐"
     repeater_filtered_category_ids: list[int] = field(default_factory=list)
     repeater_filtered_response: str = "#拒絕電神崇拜，從你我做起"
+    quote_api_base_url: str = ""
+    quote_api_timeout: int = 15
+    quote_api_user_agent: str = ""
     config_path: Path | None = None
 
     @classmethod
@@ -102,6 +105,10 @@ class Settings:
         repeater_filtered_response = str(
             data.get("repeater_filtered_response", "#拒絕電神崇拜，從你我做起")
         ).strip() or "#拒絕電神崇拜，從你我做起"
+        quote_api_base_url = get_env_or_default("QUOTE_API_BASE_URL", "").strip().split("#", 1)[0].rstrip("/")
+        quote_api_timeout = max(5, int(get_env_or_default("QUOTE_API_TIMEOUT", "15")))
+        quote_api_key = get_env_or_default("QUOTE_API_KEY", "").strip()
+        quote_api_user_agent = get_env_or_default("QUOTE_API_USER_AGENT", "").strip()
         prompt_config = PromptConfig.from_env()
 
         return cls(
@@ -125,6 +132,10 @@ class Settings:
             starboard_emoji=starboard_emoji,
             repeater_filtered_category_ids=repeater_filtered_category_ids,
             repeater_filtered_response=repeater_filtered_response,
+            quote_api_base_url=quote_api_base_url,
+            quote_api_timeout=quote_api_timeout,
+            quote_api_key=quote_api_key,
+            quote_api_user_agent=quote_api_user_agent,
             config_path=path.resolve(),
         )
 
