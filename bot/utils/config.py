@@ -107,7 +107,6 @@ class Settings:
         ).strip() or "#拒絕電神崇拜，從你我做起"
         quote_api_base_url = get_env_or_default("QUOTE_API_BASE_URL", "").strip().split("#", 1)[0].rstrip("/")
         quote_api_timeout = max(5, int(get_env_or_default("QUOTE_API_TIMEOUT", "15")))
-        quote_api_key = get_env_or_default("QUOTE_API_KEY", "").strip()
         quote_api_user_agent = get_env_or_default("QUOTE_API_USER_AGENT", "").strip()
         prompt_config = PromptConfig.from_env()
 
@@ -134,7 +133,6 @@ class Settings:
             repeater_filtered_response=repeater_filtered_response,
             quote_api_base_url=quote_api_base_url,
             quote_api_timeout=quote_api_timeout,
-            quote_api_key=quote_api_key,
             quote_api_user_agent=quote_api_user_agent,
             config_path=path.resolve(),
         )

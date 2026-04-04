@@ -17,7 +17,6 @@ class Starboard(commands.Cog):
         self.quote_api_base_url = (self.bot.settings.quote_api_base_url or "").strip()
         self.quote_api_enabled = bool(self.quote_api_base_url)
         self.quote_api_timeout = self.bot.settings.quote_api_timeout
-        self.quote_api_key = self.bot.settings.quote_api_key
         self.quote_api_user_agent = self.bot.settings.quote_api_user_agent
 
     def _is_target_emoji(self, emoji: str) -> bool:
@@ -62,8 +61,6 @@ class Starboard(commands.Cog):
         }
         if self.quote_api_user_agent:
             headers["user-agent"] = self.quote_api_user_agent
-        if self.quote_api_key:
-            headers["authorization"] = f"Bearer {self.quote_api_key}"
         req = request.Request(
             endpoint,
             data=body,
