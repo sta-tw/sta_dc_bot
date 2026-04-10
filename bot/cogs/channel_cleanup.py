@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands, tasks
 from database.db_manager import DatabaseManager
 
-STALE_HOURS = 24
+STALE_HOURS = 72
 
 
 class ChannelCleanup(commands.Cog):
@@ -43,15 +43,19 @@ class ChannelCleanup(commands.Cog):
             if not channel.name.startswith("身分組申請-"):
                 continue
 
-            age_hours = (now - channel.created_at).total_seconds() / 3600
-            if age_hours < STALE_HOURS:
+            latest_human_message_time = await self._get_latest_human_message_time(channel)
+            if latest_human_message_time is None:
+                latest_human_message_time = channel.created_at
+
+            inactive_hours = (now - latest_human_message_time).total_seconds() / 3600
+            if inactive_hours < STALE_HOURS:
                 continue
 
             try:
                 embed = discord.Embed(
-                    title="申請逾時，頻道即將關閉",
+                    title="申請頻道閒置，頻道即將關閉",
                     description=(
-                        f"此申請頻道已超過 **{STALE_HOURS} 小時**未送出申請，"
+                        f"此申請頻道已超過 **{STALE_HOURS} 小時**沒有任何成員發言，"
                         "將在 10 秒後自動關閉。\n"
                         "如需重新申請，請再次點擊申請按鈕。"
                     ),
@@ -59,7 +63,7 @@ class ChannelCleanup(commands.Cog):
                 )
                 await channel.send(embed=embed)
                 await asyncio.sleep(10)
-                await channel.delete(reason=f"申請超時（{STALE_HOURS} 小時未送出）")
+                await channel.delete(reason=f"申請頻道閒置（{STALE_HOURS} 小時無人發言）")
             except (discord.Forbidden, discord.NotFound):
                 pass
             except Exception as e:
@@ -67,6 +71,22 @@ class ChannelCleanup(commands.Cog):
             finally:
                 await db.update_application_status(app["user_id"], "expired")
                 await db.remove_bot_created_channel(app["channel_id"])
+
+    async def _get_latest_human_message_time(self, channel: discord.abc.GuildChannel):
+        if not isinstance(channel, discord.TextChannel):
+            return None
+
+        try:
+            async for message in channel.history(limit=100, oldest_first=False):
+                if message.author and not message.author.bot:
+                    return message.created_at
+        except (discord.Forbidden, discord.NotFound):
+            return None
+        except Exception as e:
+            self.bot.logger.warning(f"[ChannelCleanup] 讀取頻道 {channel.id} 訊息失敗: {e}")
+            return None
+
+        return None
 
 
 async def setup(bot: commands.Bot):

@@ -280,9 +280,17 @@ class StudentApplicationForm(View):
             emoji=self.emoji.get('red_light'),
             custom_id="submit_student_form"
         )
+        delete_button = Button(
+            label="刪除此頻道",
+            style=discord.ButtonStyle.danger,
+            emoji=self.emoji.get('red_fire'),
+            custom_id="delete_student_application_channel"
+        )
 
         submit_button.callback = self.show_form
+        delete_button.callback = self.delete_channel
         self.add_item(submit_button)
+        self.add_item(delete_button)
 
     async def show_form(self, interaction: discord.Interaction):
         if self.user_id == 0:
@@ -297,6 +305,34 @@ class StudentApplicationForm(View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         await interaction.response.send_modal(StudentApplicationModal(self.user_id, self, self.bot))
+
+    async def delete_channel(self, interaction: discord.Interaction):
+        owner_id = self.user_id or await _resolve_user_id(interaction)
+        is_admin = interaction.user.guild_permissions.administrator
+
+        if not is_admin and (owner_id == 0 or interaction.user.id != owner_id):
+            embed = discord.Embed(
+                title="權限不足",
+                description="只有申請人或管理員可以刪除此頻道。",
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
+        await db_manager.init_db()
+
+        if owner_id:
+            await db_manager.update_application_status(owner_id, "closed")
+        await db_manager.remove_bot_created_channel(interaction.channel.id)
+
+        embed = discord.Embed(
+            title="即將刪除頻道...",
+            description="此申請頻道將在 3 秒後關閉",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed)
+        await asyncio.sleep(3)
+        await interaction.channel.delete(reason="申請人手動刪除申請頻道")
 
 class StudentApplicationModal(Modal):
     def __init__(self, user_id: int, form_view=None, bot=None):
@@ -391,9 +427,17 @@ class ElderApplicationForm(View):
             emoji=self.emoji.get('red_light'),
             custom_id="submit_elder_form"
         )
+        delete_button = Button(
+            label="刪除此頻道",
+            style=discord.ButtonStyle.danger,
+            emoji=self.emoji.get('red_fire'),
+            custom_id="delete_elder_application_channel"
+        )
 
         submit_button.callback = self.show_form
+        delete_button.callback = self.delete_channel
         self.add_item(submit_button)
+        self.add_item(delete_button)
 
     async def show_form(self, interaction: discord.Interaction):
         if self.user_id == 0:
@@ -408,6 +452,34 @@ class ElderApplicationForm(View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         await interaction.response.send_modal(ElderApplicationModal(self.user_id, self, self.bot))
+
+    async def delete_channel(self, interaction: discord.Interaction):
+        owner_id = self.user_id or await _resolve_user_id(interaction)
+        is_admin = interaction.user.guild_permissions.administrator
+
+        if not is_admin and (owner_id == 0 or interaction.user.id != owner_id):
+            embed = discord.Embed(
+                title="權限不足",
+                description="只有申請人或管理員可以刪除此頻道。",
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
+        await db_manager.init_db()
+
+        if owner_id:
+            await db_manager.update_application_status(owner_id, "closed")
+        await db_manager.remove_bot_created_channel(interaction.channel.id)
+
+        embed = discord.Embed(
+            title="即將刪除頻道...",
+            description="此申請頻道將在 3 秒後關閉",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed)
+        await asyncio.sleep(3)
+        await interaction.channel.delete(reason="申請人手動刪除申請頻道")
 
 class ElderApplicationModal(Modal):
     def __init__(self, user_id: int, form_view=None, bot=None):
