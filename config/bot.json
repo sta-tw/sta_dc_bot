@@ -50,7 +50,8 @@
     "bot.cogs.emoji",
     "bot.cogs.repeater",
     "bot.cogs.starboard",
-    "bot.cogs.ai_chat"
+    "bot.cogs.ai_chat",
+    "bot.cogs.forum_list_manager"
   ],
   "faq_content": "",
   "llm": {
