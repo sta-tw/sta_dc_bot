@@ -262,6 +262,51 @@ class Manage_Application(commands.Cog):
         view = discord.ui.View(timeout=None)
         view.add_item(select)
 
+        close_button = discord.ui.Button(
+            label="關閉申請",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"manage_application_close_{user_id}",
+        )
+
+        async def close_callback(button_interaction: discord.Interaction):
+            await button_interaction.response.defer(ephemeral=True)
+
+            channel_data = await db_manager.get_application_channel(user_id)
+            if not channel_data:
+                await button_interaction.followup.send("找不到申請頻道資訊。", ephemeral=True)
+                return
+
+            channel = interaction.guild.get_channel(channel_data["channel_id"])
+            applicant = interaction.guild.get_member(user_id)
+
+            if channel and applicant:
+                overwrites = channel.overwrites
+                if applicant in overwrites:
+                    del overwrites[applicant]
+                    await channel.edit(overwrites=overwrites)
+
+                embed_channel = discord.Embed(
+                    title="申請已關閉",
+                    description=f"{button_interaction.user.mention} 已關閉此申請。申請者已無法存取此頻道。",
+                    color=discord.Color.blue()
+                )
+                await channel.send(embed=embed_channel)
+
+            await db_manager.update_application_status(user_id, "closed")
+
+            for child in view.children:
+                child.disabled = True
+
+            try:
+                await button_interaction.message.edit(view=view)
+            except discord.NotFound:
+                pass
+
+            await button_interaction.followup.send("已關閉申請。", ephemeral=True)
+
+        close_button.callback = close_callback
+        view.add_item(close_button)
+
         embed = discord.Embed(
             title="批准申請",
             description=f"請選擇要賦予給申請者的身分組（可複選）：",

@@ -30,8 +30,9 @@ class ChannelCleanup(commands.Cog):
         db = DatabaseManager(guild.id, guild.name)
         await db.init_db()
 
-        pending = await db.get_applications_by_status("pending")
         now = discord.utils.utcnow()
+
+        pending = await db.get_applications_by_status("pending")
 
         for app in pending:
             channel = guild.get_channel(app["channel_id"])
@@ -71,6 +72,47 @@ class ChannelCleanup(commands.Cog):
             finally:
                 await db.update_application_status(app["user_id"], "expired")
                 await db.remove_bot_created_channel(app["channel_id"])
+
+        pending_suggestions = await db.get_suggestions_by_status("pending")
+
+        for suggestion in pending_suggestions:
+            channel = guild.get_channel(suggestion["channel_id"])
+
+            if channel is None:
+                await db.update_suggestion_status(suggestion["user_id"], "expired")
+                continue
+
+            if not channel.name.startswith("建議-"):
+                continue
+
+            latest_human_message_time = await self._get_latest_human_message_time(channel)
+            if latest_human_message_time is None:
+                latest_human_message_time = channel.created_at
+
+            inactive_hours = (now - latest_human_message_time).total_seconds() / 3600
+            if inactive_hours < STALE_HOURS:
+                continue
+
+            try:
+                embed = discord.Embed(
+                    title="建議頻道閒置，頻道即將關閉",
+                    description=(
+                        f"此建議頻道已超過 **{STALE_HOURS} 小時**沒有任何成員發言，"
+                        "將在 10 秒後自動關閉。\n"
+                        "如需重新提交，請再次點擊建議面板按鈕。"
+                    ),
+                    color=discord.Color.orange()
+                )
+                await channel.send(embed=embed)
+                await asyncio.sleep(10)
+                await channel.delete(reason=f"建議頻道閒置（{STALE_HOURS} 小時無人發言）")
+            except (discord.Forbidden, discord.NotFound):
+                pass
+            except Exception as e:
+                self.bot.logger.warning(f"[ChannelCleanup] 刪除建議頻道 {suggestion['channel_id']} 失敗: {e}")
+            finally:
+                await db.update_suggestion_status(suggestion["user_id"], "expired")
+                await db.remove_bot_created_channel(suggestion["channel_id"])
 
     async def _get_latest_human_message_time(self, channel: discord.abc.GuildChannel):
         if not isinstance(channel, discord.TextChannel):

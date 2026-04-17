@@ -90,6 +90,13 @@ class DatabaseManager:
                     status TEXT
                 )
             ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS suggestion_channels (
+                    user_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER,
+                    status TEXT
+                )
+            ''')
             await db.commit()
 
     async def save_application_channel(self, user_id: int, channel_id: int):
@@ -100,10 +107,28 @@ class DatabaseManager:
             ''', (user_id, channel_id, "pending"))
             await db.commit()
 
+    async def save_suggestion_channel(self, user_id: int, channel_id: int):
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute('''
+                INSERT OR REPLACE INTO suggestion_channels (user_id, channel_id, status)
+                VALUES (?, ?, ?)
+            ''', (user_id, channel_id, "pending"))
+            await db.commit()
+
     async def get_application_channel(self, user_id: int) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_name) as db:
             cursor = await db.execute('''
                 SELECT channel_id, status FROM application_channels WHERE user_id = ?
+            ''', (user_id,))
+            row = await cursor.fetchone()
+            if row:
+                return {"channel_id": row[0], "status": row[1]}
+            return None
+
+    async def get_suggestion_channel(self, user_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute('''
+                SELECT channel_id, status FROM suggestion_channels WHERE user_id = ?
             ''', (user_id,))
             row = await cursor.fetchone()
             if row:
@@ -121,6 +146,17 @@ class DatabaseManager:
                 return int(row[0])
             return None
 
+    async def get_suggestion_user_by_channel(self, channel_id: int) -> Optional[int]:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute(
+                '''SELECT user_id FROM suggestion_channels WHERE channel_id = ?''',
+                (channel_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return int(row[0])
+            return None
+
     async def update_application_status(self, user_id: int, status: str):
         async with aiosqlite.connect(self.db_name) as db:
             await db.execute('''
@@ -128,10 +164,25 @@ class DatabaseManager:
             ''', (status, user_id))
             await db.commit()
 
+    async def update_suggestion_status(self, user_id: int, status: str):
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute('''
+                UPDATE suggestion_channels SET status = ? WHERE user_id = ?
+            ''', (status, user_id))
+            await db.commit()
+
     async def get_applications_by_status(self, status: str) -> List[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_name) as db:
             cursor = await db.execute('''
                 SELECT user_id, channel_id, status FROM application_channels WHERE status = ?
+            ''', (status,))
+            rows = await cursor.fetchall()
+            return [{"user_id": row[0], "channel_id": row[1], "status": row[2]} for row in rows]
+
+    async def get_suggestions_by_status(self, status: str) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute('''
+                SELECT user_id, channel_id, status FROM suggestion_channels WHERE status = ?
             ''', (status,))
             rows = await cursor.fetchall()
             return [{"user_id": row[0], "channel_id": row[1], "status": row[2]} for row in rows]

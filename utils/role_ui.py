@@ -3,6 +3,8 @@ from discord.ui import Button, View, Modal, TextInput, Select
 from database.db_manager import DatabaseManager
 from bot.utils.role_helper import get_or_create_role, update_role_id_in_config, get_role_color
 import asyncio
+import json
+from pathlib import Path
 
 
 async def _resolve_user_id(interaction: discord.Interaction) -> int:
@@ -18,6 +20,66 @@ async def _resolve_user_id(interaction: discord.Interaction) -> int:
             if uid:
                 return uid
     return 0
+
+
+def _load_support_role_ids(bot) -> list[int]:
+    role_ids: list[int] = []
+
+    settings = getattr(bot, "settings", None) if bot else None
+    if settings is not None:
+        role_ids.extend(getattr(settings, "support_role_ids", []) or [])
+
+    settings_path = getattr(bot, "settings_path", None) if bot else None
+    if settings_path:
+        try:
+            raw = json.loads(settings_path.read_text(encoding="utf-8"))
+            role_ids.extend(int(role_id) for role_id in raw.get("support_role_ids", []))
+        except Exception:
+            pass
+
+    fallback_path = Path("config/bot.json")
+    if fallback_path.exists():
+        try:
+            raw = json.loads(fallback_path.read_text(encoding="utf-8"))
+            role_ids.extend(int(role_id) for role_id in raw.get("support_role_ids", []))
+        except Exception:
+            pass
+
+    unique_ids = []
+    seen_ids = set()
+    for role_id in role_ids:
+        if role_id in seen_ids:
+            continue
+        seen_ids.add(role_id)
+        unique_ids.append(role_id)
+
+    return unique_ids
+
+
+def _resolve_support_roles(bot, guild: discord.Guild) -> list[discord.Role]:
+    role_ids = _load_support_role_ids(bot)
+
+    roles = []
+    for role_id in role_ids:
+        role = guild.get_role(role_id)
+        if role:
+            roles.append(role)
+
+    return roles
+
+
+def _format_support_mentions(bot, guild: discord.Guild) -> list[str]:
+    role_ids = _load_support_role_ids(bot)
+    mentions = []
+
+    for role_id in role_ids:
+        role = guild.get_role(role_id)
+        if role:
+            mentions.append(role.mention)
+        else:
+            mentions.append(f"<@&{role_id}>")
+
+    return mentions
 
 
 class Verfication_View(View):
@@ -239,6 +301,15 @@ class RoleSelectionView(View):
         select.callback = self.select_callback
         self.add_item(select)
 
+        close_button = Button(
+            label="關閉申請",
+            style=discord.ButtonStyle.danger,
+            emoji=self.emoji.get('red_fire'),
+            custom_id="close_role_selection_channel"
+        )
+        close_button.callback = self.close_callback
+        self.add_item(close_button)
+
     async def select_callback(self, interaction: discord.Interaction):
         if self.user_id == 0:
             self.user_id = await _resolve_user_id(interaction)
@@ -266,6 +337,38 @@ class RoleSelectionView(View):
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.followup.send(f"{self.emoji.get('cat1')} 請先點擊下方按鈕填寫表單 {self.emoji.get('cat1')}", view=form)
 
+    async def close_callback(self, interaction: discord.Interaction):
+        owner_id = self.user_id or await _resolve_user_id(interaction)
+        is_admin = interaction.user.guild_permissions.administrator
+
+        if not is_admin and (owner_id == 0 or interaction.user.id != owner_id):
+            embed = discord.Embed(
+                title="權限不足",
+                description="只有申請人或管理員可以關閉此申請頻道。",
+                color=discord.Color.red()
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
+        await db_manager.init_db()
+
+        if owner_id:
+            await db_manager.update_application_status(owner_id, "closed")
+
+        applicant = interaction.guild.get_member(owner_id) if owner_id else None
+        if applicant:
+            overwrites = interaction.channel.overwrites
+            if applicant in overwrites:
+                del overwrites[applicant]
+                await interaction.channel.edit(overwrites=overwrites)
+
+        embed = discord.Embed(
+            title="申請已關閉",
+            description="申請者已無法查看此頻道，後續將由自動清理流程處理。",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed)
+
 class StudentApplicationForm(View):
     def __init__(self, user_id: int, form_view=None, bot=None):
         super().__init__(timeout=None)
@@ -280,17 +383,9 @@ class StudentApplicationForm(View):
             emoji=self.emoji.get('red_light'),
             custom_id="submit_student_form"
         )
-        delete_button = Button(
-            label="刪除此頻道",
-            style=discord.ButtonStyle.danger,
-            emoji=self.emoji.get('red_fire'),
-            custom_id="delete_student_application_channel"
-        )
 
         submit_button.callback = self.show_form
-        delete_button.callback = self.delete_channel
         self.add_item(submit_button)
-        self.add_item(delete_button)
 
     async def show_form(self, interaction: discord.Interaction):
         if self.user_id == 0:
@@ -305,34 +400,6 @@ class StudentApplicationForm(View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         await interaction.response.send_modal(StudentApplicationModal(self.user_id, self, self.bot))
-
-    async def delete_channel(self, interaction: discord.Interaction):
-        owner_id = self.user_id or await _resolve_user_id(interaction)
-        is_admin = interaction.user.guild_permissions.administrator
-
-        if not is_admin and (owner_id == 0 or interaction.user.id != owner_id):
-            embed = discord.Embed(
-                title="權限不足",
-                description="只有申請人或管理員可以刪除此頻道。",
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
-        await db_manager.init_db()
-
-        if owner_id:
-            await db_manager.update_application_status(owner_id, "closed")
-        await db_manager.remove_bot_created_channel(interaction.channel.id)
-
-        embed = discord.Embed(
-            title="即將刪除頻道...",
-            description="此申請頻道將在 3 秒後關閉",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed)
-        await asyncio.sleep(3)
-        await interaction.channel.delete(reason="申請人手動刪除申請頻道")
 
 class StudentApplicationModal(Modal):
     def __init__(self, user_id: int, form_view=None, bot=None):
@@ -427,17 +494,9 @@ class ElderApplicationForm(View):
             emoji=self.emoji.get('red_light'),
             custom_id="submit_elder_form"
         )
-        delete_button = Button(
-            label="刪除此頻道",
-            style=discord.ButtonStyle.danger,
-            emoji=self.emoji.get('red_fire'),
-            custom_id="delete_elder_application_channel"
-        )
 
         submit_button.callback = self.show_form
-        delete_button.callback = self.delete_channel
         self.add_item(submit_button)
-        self.add_item(delete_button)
 
     async def show_form(self, interaction: discord.Interaction):
         if self.user_id == 0:
@@ -452,34 +511,6 @@ class ElderApplicationForm(View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         await interaction.response.send_modal(ElderApplicationModal(self.user_id, self, self.bot))
-
-    async def delete_channel(self, interaction: discord.Interaction):
-        owner_id = self.user_id or await _resolve_user_id(interaction)
-        is_admin = interaction.user.guild_permissions.administrator
-
-        if not is_admin and (owner_id == 0 or interaction.user.id != owner_id):
-            embed = discord.Embed(
-                title="權限不足",
-                description="只有申請人或管理員可以刪除此頻道。",
-                color=discord.Color.red()
-            )
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        db_manager = DatabaseManager(interaction.guild.id, interaction.guild.name)
-        await db_manager.init_db()
-
-        if owner_id:
-            await db_manager.update_application_status(owner_id, "closed")
-        await db_manager.remove_bot_created_channel(interaction.channel.id)
-
-        embed = discord.Embed(
-            title="即將刪除頻道...",
-            description="此申請頻道將在 3 秒後關閉",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed)
-        await asyncio.sleep(3)
-        await interaction.channel.delete(reason="申請人手動刪除申請頻道")
 
 class ElderApplicationModal(Modal):
     def __init__(self, user_id: int, form_view=None, bot=None):
@@ -634,20 +665,26 @@ class SubmitApplicationView(View):
                 type=discord.ChannelType.private_thread
             )
 
+            members_to_add = []
             mod_role = discord.utils.get(interaction.guild.roles, name="管理員")
             if mod_role:
-                for member in mod_role.members:
-                    try:
-                        await thread.add_user(member)
-                    except:
-                        continue
+                members_to_add.extend(mod_role.members)
 
-        support_role_ids = getattr(self.bot.settings, "support_role_ids", []) if self.bot else []
-        support_mentions = []
-        for role_id in support_role_ids:
-            role = interaction.guild.get_role(role_id)
-            if role:
-                support_mentions.append(role.mention)
+            support_roles = _resolve_support_roles(self.bot, interaction.guild)
+            for role in support_roles:
+                members_to_add.extend(role.members)
+
+            seen_member_ids = set()
+            for member in members_to_add:
+                if member.id in seen_member_ids:
+                    continue
+                seen_member_ids.add(member.id)
+                try:
+                    await thread.add_user(member)
+                except discord.HTTPException:
+                    continue
+
+        support_mentions = _format_support_mentions(self.bot, interaction.guild)
 
         mention_text = " ".join(support_mentions) if support_mentions else "@管理員"
 
@@ -764,6 +801,45 @@ class ApplicationApprovalView(View):
 
         view = View(timeout=None)
         view.add_item(select)
+
+        close_button = Button(
+            label="關閉申請",
+            style=discord.ButtonStyle.danger,
+            custom_id="admin_role_select_close"
+        )
+
+        async def close_callback(close_interaction: discord.Interaction):
+            db_manager = DatabaseManager(close_interaction.guild.id, close_interaction.guild.name)
+            await db_manager.update_application_status(self.user_id, "closed")
+
+            applicant = close_interaction.guild.get_member(self.user_id)
+            channel = close_interaction.channel.parent if close_interaction.channel else None
+
+            if channel and applicant:
+                overwrites = channel.overwrites
+                if applicant in overwrites:
+                    del overwrites[applicant]
+                    await channel.edit(overwrites=overwrites)
+
+                close_embed = discord.Embed(
+                    title="申請已關閉",
+                    description=f"{close_interaction.user.mention} 已關閉此申請。",
+                    color=discord.Color.blue()
+                )
+                await channel.send(embed=close_embed)
+
+            for child in view.children:
+                child.disabled = True
+
+            try:
+                await close_interaction.message.edit(view=view)
+            except discord.NotFound:
+                pass
+
+            await close_interaction.response.send_message("已關閉申請。", ephemeral=True)
+
+        close_button.callback = close_callback
+        view.add_item(close_button)
 
         embed = discord.Embed(
             title="選擇身分組",

@@ -10,7 +10,7 @@
   "repeater_filtered_category_ids": [1430114754462089326],
   "repeater_filtered_response": "#   拒絕電神崇拜，從你我做起",
   "support_role_ids": [
-    1355459553042632744
+    1307166765725384787
   ],
   "blocked_keywords": [],
   "ticket_categories": [
@@ -47,11 +47,11 @@
     "bot.cogs.exchange_setup",
     "bot.cogs.role_button",
     "bot.cogs.member_verification",
+    "bot.cogs.suggestion_submission",
     "bot.cogs.emoji",
     "bot.cogs.repeater",
     "bot.cogs.starboard",
-    "bot.cogs.ai_chat",
-    "bot.cogs.forum_list_manager"
+    "bot.cogs.ai_chat"
   ],
   "faq_content": "",
   "llm": {
