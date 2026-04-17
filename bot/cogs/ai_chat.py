@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import mimetypes
 import os
 import re
 import time
@@ -15,6 +16,7 @@ from discord.ext import commands
 
 class AiChat(commands.Cog):
     MASS_MENTION_TOKENS: tuple[str, str] = ("@everyone", "@here")
+    IMAGE_URL_PATTERN = re.compile(r"https?://[^\s<>\]]+")
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -38,6 +40,9 @@ class AiChat(commands.Cog):
         self.memory_top_k = max(1, int(os.getenv("VLLM_MEMORY_TOP_K") or "3"))
         self.memory_collection_name = (os.getenv("VLLM_MEMORY_COLLECTION") or "ai_chat_memory").strip()
         self.memory_dir = Path((os.getenv("VLLM_MEMORY_DIR") or "data/chroma").strip())
+        self.vision_enabled = (os.getenv("VLLM_VISION_ENABLED") or "1").strip() == "1"
+        self.vision_max_images = max(1, int(os.getenv("VLLM_VISION_MAX_IMAGES") or "3"))
+        self.vision_max_image_bytes = max(1, int(os.getenv("VLLM_VISION_MAX_IMAGE_BYTES") or str(1024 * 1024)))
         self._rate_limited_until = 0.0
         self.memory_collection = None
         self.s2t_converter = self._init_s2t_converter() if self.s2t_enabled else None
@@ -120,6 +125,43 @@ class AiChat(commands.Cog):
         )
         return any(re.fullmatch(pattern, normalized) for pattern in patterns)
 
+    def _is_image_attachment(self, attachment: discord.Attachment) -> bool:
+        content_type = (attachment.content_type or "").lower()
+        if content_type.startswith("image/"):
+            return True
+
+        suffix = Path(attachment.filename or "").suffix.lower()
+        if not suffix:
+            return False
+
+        guessed_type, _ = mimetypes.guess_type(attachment.filename)
+        return bool(guessed_type and guessed_type.startswith("image/"))
+
+    def _extract_image_urls(self, message: discord.Message) -> list[str]:
+        if not self.vision_enabled:
+            return []
+
+        image_urls: list[str] = []
+
+        for attachment in message.attachments:
+            if len(image_urls) >= self.vision_max_images:
+                break
+            if not self._is_image_attachment(attachment):
+                continue
+            if attachment.size and attachment.size > self.vision_max_image_bytes:
+                continue
+            image_urls.append(attachment.url)
+
+        if len(image_urls) < self.vision_max_images:
+            for url in self.IMAGE_URL_PATTERN.findall(message.content or ""):
+                if len(image_urls) >= self.vision_max_images:
+                    break
+                lowered = url.lower().split("?", 1)[0]
+                if any(lowered.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                    image_urls.append(url.rstrip(")].,>"))
+
+        return image_urls
+
     async def _collect_context(self, message: discord.Message) -> list[str]:
         context_messages: list[discord.Message] = []
         async for item in message.channel.history(limit=self.context_limit + 1, before=message, oldest_first=False):
@@ -146,6 +188,15 @@ class AiChat(commands.Cog):
             stream=False,
         )
         return response.choices[0].message.content if response.choices else ""
+
+    def _build_user_message_content(self, prompt: str, image_urls: list[str]) -> str | list[dict[str, object]]:
+        if not image_urls:
+            return prompt
+
+        content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        return content
 
     def _query_memory(self, query_text: str, guild_id: int, user_id: int) -> list[str]:
         if self.memory_collection is None:
@@ -248,6 +299,7 @@ class AiChat(commands.Cog):
 
         try:
             context_lines = await self._collect_context(message)
+            image_urls = self._extract_image_urls(message)
             memory_lines = await asyncio.to_thread(
                 self._query_memory,
                 query_text,
@@ -261,10 +313,11 @@ class AiChat(commands.Cog):
                 memory_lines,
                 user_name,
             )
+            user_message_content = self._build_user_message_content(prompt, image_urls)
 
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_message_content},
             ]
 
             async with message.channel.typing():
