@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 import discord
-from openai import OpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
 from discord.ext import commands
 
 
@@ -30,11 +30,16 @@ class AiChat(commands.Cog):
         self.empty_user_text = (os.getenv("VLLM_EMPTY_USER_TEXT") or "").strip()
         self.empty_reply_text = (os.getenv("VLLM_EMPTY_REPLY_TEXT") or "").strip()
         self.rate_limit_message_template = (os.getenv("VLLM_RATE_LIMIT_MESSAGE") or "").strip()
+        self.unavailable_message_template = (
+            os.getenv("VLLM_UNAVAILABLE_MESSAGE") or "LLM 服務暫時無法連線，請稍後再試（約 {seconds} 秒）。"
+        ).strip()
         self.context_limit = max(1, int(os.getenv("VLLM_CONTEXT_MESSAGES") or "8"))
         self.max_reply_chars = max(200, int(os.getenv("VLLM_MAX_REPLY_CHARS") or "1800"))
         self.temperature = max(0.0, min(2.0, float(os.getenv("VLLM_TEMPERATURE") or "0.7")))
         self.max_tokens = max(50, int(os.getenv("VLLM_MAX_TOKENS") or "512"))
         self.rate_limit_cooldown = max(5, int(os.getenv("VLLM_RATE_LIMIT_COOLDOWN") or "60"))
+        self.request_retries = max(0, int(os.getenv("VLLM_REQUEST_RETRIES") or "2"))
+        self.retry_backoff = max(0.1, float(os.getenv("VLLM_RETRY_BACKOFF") or "0.8"))
         self.s2t_enabled = (os.getenv("VLLM_S2T_ENABLED") or "1").strip() == "1"
         self.memory_enabled = (os.getenv("VLLM_MEMORY_ENABLED") or "1").strip() == "1"
         self.memory_top_k = max(1, int(os.getenv("VLLM_MEMORY_TOP_K") or "3"))
@@ -179,15 +184,33 @@ class AiChat(commands.Cog):
         return lines
 
     def _call_vllm(self, messages: list[dict]) -> str:
+        attempts = self.request_retries + 1
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            stream=False,
-        )
-        return response.choices[0].message.content if response.choices else ""
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    stream=False,
+                )
+                return response.choices[0].message.content if response.choices else ""
+            except (APIConnectionError, APITimeoutError) as exc:
+                if attempt >= attempts:
+                    raise
+
+                delay_seconds = self.retry_backoff * (2 ** (attempt - 1))
+                self.bot.logger.warning(
+                    "AiChat request failed (%s/%s), retry in %.2fs: %s",
+                    attempt,
+                    attempts,
+                    delay_seconds,
+                    exc,
+                )
+                time.sleep(delay_seconds)
+
+        return ""
 
     def _build_user_message_content(self, prompt: str, image_urls: list[str]) -> str | list[dict[str, object]]:
         if not image_urls:
@@ -355,6 +378,14 @@ class AiChat(commands.Cog):
             self.bot.logger.warning("AiChat rate limited, cooldown=%s sec: %s", self.rate_limit_cooldown, exc)
             await message.reply(
                 self.rate_limit_message_template.format(seconds=self.rate_limit_cooldown),
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (APIConnectionError, APITimeoutError) as exc:
+            self._rate_limited_until = time.time() + self.rate_limit_cooldown
+            self.bot.logger.warning("AiChat unavailable, cooldown=%s sec: %s", self.rate_limit_cooldown, exc)
+            await message.reply(
+                self.unavailable_message_template.format(seconds=self.rate_limit_cooldown),
                 mention_author=False,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
