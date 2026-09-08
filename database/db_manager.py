@@ -187,6 +187,12 @@ class DatabaseManager:
             rows = await cursor.fetchall()
             return [{"user_id": row[0], "channel_id": row[1], "status": row[2]} for row in rows]
 
+    async def get_all_suggestions(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute('SELECT user_id, channel_id, status FROM suggestion_channels')
+            rows = await cursor.fetchall()
+            return [{"user_id": row[0], "channel_id": row[1], "status": row[2]} for row in rows]
+
     async def get_all_applications(self) -> List[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_name) as db:
             cursor = await db.execute('SELECT user_id, channel_id, status FROM application_channels')

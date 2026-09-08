@@ -32,16 +32,16 @@ class ChannelCleanup(commands.Cog):
 
         now = discord.utils.utcnow()
 
-        pending = await db.get_applications_by_status("pending")
+        applications = await db.get_all_applications()
 
-        for app in pending:
+        for app in applications:
             channel = guild.get_channel(app["channel_id"])
 
             if channel is None:
                 await db.update_application_status(app["user_id"], "expired")
                 continue
 
-            if not channel.name.startswith("身分組申請-"):
+            if not channel.name.startswith(("身分組申請-", "交換備審申請-")):
                 continue
 
             latest_human_message_time = await self._get_latest_human_message_time(channel)
@@ -73,9 +73,9 @@ class ChannelCleanup(commands.Cog):
                 await db.update_application_status(app["user_id"], "expired")
                 await db.remove_bot_created_channel(app["channel_id"])
 
-        pending_suggestions = await db.get_suggestions_by_status("pending")
+        suggestions = await db.get_all_suggestions()
 
-        for suggestion in pending_suggestions:
+        for suggestion in suggestions:
             channel = guild.get_channel(suggestion["channel_id"])
 
             if channel is None:

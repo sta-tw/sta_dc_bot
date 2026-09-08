@@ -48,6 +48,7 @@
     "bot.cogs.role_button",
     "bot.cogs.member_verification",
     "bot.cogs.suggestion_submission",
+    "bot.cogs.channel_cleanup",
     "bot.cogs.emoji",
     "bot.cogs.repeater",
     "bot.cogs.starboard",

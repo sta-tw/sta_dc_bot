@@ -56,6 +56,7 @@ def test_database_manager_import():
         'get_all_applications',
         'update_application_status',
         'get_applications_by_status',
+        'get_all_suggestions',
         'save_verification_role',
         'get_verification_roles',
         'load_guild_settings',
