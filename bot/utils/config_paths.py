@@ -14,6 +14,7 @@ class ConfigPaths:
 
     DATABASE_DIR = DATA_DIR / "database"
     TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
+    INSTAGRAM_FEED_DIR = DATA_DIR / "instagram_feed"
 
     @classmethod
     def guild_dir(cls, guild_id: int) -> Path:
@@ -32,11 +33,16 @@ class ConfigPaths:
         return cls.DATABASE_DIR / f"{guild_id}.db"
 
     @classmethod
+    def instagram_feed_state(cls, scope_id: int) -> Path:
+        return cls.INSTAGRAM_FEED_DIR / str(scope_id) / "state.json"
+
+    @classmethod
     def ensure_directories(cls):
         cls.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         cls.GUILDS_DIR.mkdir(parents=True, exist_ok=True)
         cls.DATABASE_DIR.mkdir(parents=True, exist_ok=True)
         cls.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        cls.INSTAGRAM_FEED_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def ensure_guild_dir(cls, guild_id: int):

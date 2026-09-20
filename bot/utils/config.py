@@ -36,6 +36,18 @@ class PromptConfig:
         )
 
 @dataclass(slots=True)
+class InstagramFeedConfig:
+
+    enabled: bool = False
+    profile_url: str = ""
+    feed_url: str = ""
+    guild_id: int = 0
+    channel_id: int = 0
+    role_id: int = 0
+    poll_minutes: int = 5
+
+
+@dataclass(slots=True)
 class Settings:
 
     guild_id: int
@@ -61,6 +73,7 @@ class Settings:
     quote_api_base_url: str = ""
     quote_api_timeout: int = 15
     quote_api_user_agent: str = ""
+    instagram_feed: InstagramFeedConfig = field(default_factory=InstagramFeedConfig)
     config_path: Path | None = None
 
     @classmethod
@@ -110,6 +123,20 @@ class Settings:
         quote_api_user_agent = get_env_or_default("QUOTE_API_USER_AGENT", "").strip()
         prompt_config = PromptConfig.from_env()
 
+        instagram_data = data.get("instagram_feed", {}) or {}
+        instagram_enabled = instagram_data.get("enabled", False)
+        if isinstance(instagram_enabled, str):
+            instagram_enabled = instagram_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        instagram_feed = InstagramFeedConfig(
+            enabled=bool(instagram_enabled),
+            profile_url=str(instagram_data.get("profile_url", "") or "").strip(),
+            feed_url=str(instagram_data.get("feed_url", "") or "").strip(),
+            guild_id=int(instagram_data.get("guild_id", 0) or 0),
+            channel_id=int(instagram_data.get("channel_id", 0) or 0),
+            role_id=int(instagram_data.get("role_id", 0) or 0),
+            poll_minutes=max(1, int(instagram_data.get("poll_minutes", 5) or 5)),
+        )
+
         return cls(
             guild_id=int(data["guild_id"]),
             welcome_channel_id=int(data["welcome_channel_id"]),
@@ -134,6 +161,7 @@ class Settings:
             quote_api_base_url=quote_api_base_url,
             quote_api_timeout=quote_api_timeout,
             quote_api_user_agent=quote_api_user_agent,
+            instagram_feed=instagram_feed,
             config_path=path.resolve(),
         )
 

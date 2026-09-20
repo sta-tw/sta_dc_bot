@@ -7,8 +7,18 @@
   "starboard_channel_id": 1255355900353314879,
   "starboard_min_reactions": 3,
   "starboard_emoji": "⭐",
-  "repeater_filtered_category_ids": [1430114754462089326],
+  "repeater_filtered_category_ids": [
+    1430114754462089326
+  ],
   "repeater_filtered_response": "#   拒絕電神崇拜，從你我做起",
+  "instagram_feed": {
+    "enabled": true,
+    "profile_url": "https://www.instagram.com/spec_talent.tw/",
+    "guild_id": 1255354098870517770,
+    "channel_id": 1255354098870517773,
+    "role_id": 1482309849353289800,
+    "poll_minutes": 5
+  },
   "support_role_ids": [
     1307166765725384787
   ],
@@ -52,7 +62,8 @@
     "bot.cogs.emoji",
     "bot.cogs.repeater",
     "bot.cogs.starboard",
-    "bot.cogs.ai_chat"
+    "bot.cogs.ai_chat",
+    "bot.cogs.instagram_feed"
   ],
   "faq_content": "",
   "llm": {

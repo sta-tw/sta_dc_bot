@@ -72,10 +72,12 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
         from utils.role_ui import setup_persistent_views_role
         from utils.exchange_ui import setup_persistent_views_exchange
         from utils.role_button_ui import setup_persistent_views_role_button
-        
+        from utils.instagram_feed_ui import setup_persistent_views_instagram
+
         setup_persistent_views_role(bot)
         setup_persistent_views_exchange(bot)
         setup_persistent_views_role_button(bot)
+        setup_persistent_views_instagram(bot)
         
         await _load_extensions(bot, settings.extensions)
 
