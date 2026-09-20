@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands, tasks
 from database.db_manager import DatabaseManager
 
-STALE_HOURS = 72
+STALE_HOURS = 36
 
 
 class ChannelCleanup(commands.Cog):
