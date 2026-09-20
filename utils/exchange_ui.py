@@ -5,6 +5,28 @@ from bot.utils.role_helper import get_or_create_role, update_role_id_in_config, 
 import asyncio
 
 
+def _get_support_roles(bot, guild):
+    support_role_ids = getattr(getattr(bot, "settings", None), "support_role_ids", []) or []
+    return [
+        role
+        for role_id in support_role_ids
+        if (role := guild.get_role(role_id)) is not None
+    ]
+
+
+async def _add_review_members(thread, bot, guild):
+    members_by_id = {}
+    for role in _get_support_roles(bot, guild):
+        for member in role.members:
+            members_by_id[member.id] = member
+
+    for member in members_by_id.values():
+        try:
+            await thread.add_user(member)
+        except discord.HTTPException:
+            continue
+
+
 async def _resolve_user_id(interaction: discord.Interaction) -> int:
     db = DatabaseManager(interaction.guild.id, interaction.guild.name)
     await db.init_db()
@@ -64,9 +86,8 @@ class Exchange_View(View):
             interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
 
-        mod_role = discord.utils.get(interaction.guild.roles, name="管理員")
-        if mod_role:
-            overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        for role in _get_support_roles(self.bot, interaction.guild):
+            overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
         channel_name = f"交換備審申請-{interaction.user.display_name}"
         channel = await interaction.guild.create_text_channel(
@@ -176,13 +197,7 @@ class SubmitApplicationView(View):
                 type=discord.ChannelType.private_thread
             )
 
-            mod_role = discord.utils.get(interaction.guild.roles, name="管理員")
-            if mod_role:
-                for member in mod_role.members:
-                    try:
-                        await thread.add_user(member)
-                    except:
-                        continue
+        await _add_review_members(thread, self.bot, interaction.guild)
 
         support_role_ids = getattr(self.bot.settings, "support_role_ids", []) if self.bot else []
         support_mentions = []
