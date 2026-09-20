@@ -30,7 +30,6 @@ jobs:
       run: |
         pytest --cov=bot --cov-report=xml --cov-report=term
       env:
-        # Mock environment variables for testing
         CLOUDFLARE_ACCOUNT_ID: test_account_id
         CLOUDFLARE_API_TOKEN: test_api_token
         DISCORD_TOKEN: test_discord_token

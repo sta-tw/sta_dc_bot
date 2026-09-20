@@ -1,4 +1,3 @@
-## Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -8,36 +7,31 @@ __pycache__/
 dist/
 build/
 
-## Logs
 *.log
 
-## Virtual environments
 .venv/
 venv/
 ENV/
 env/
 
-## Environment variables
 .env
 .env.local
 .env.*
 !.env.example
 
-## Database
 *.db
 *.sqlite
 *.sqlite3
 data/database/
+data/chroma/
+data/instagram_feed/
 
-## Transcripts
 data/transcripts/*
 !data/transcripts/.gitkeep
 
-## Guild-specific configs (contain server IDs and sensitive data)
 config/guilds/*/
 !config/guilds/verification_example.json
 
-## Test artifacts
 .pytest_cache/
 .coverage
 htmlcov/
@@ -47,7 +41,6 @@ coverage.xml
 test_results.txt
 command_test_report.json
 
-## Editor / OS
 .vscode/
 .idea/
 .DS_Store

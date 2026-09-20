@@ -29,6 +29,17 @@ readme by claude
 - `/delete_channel`：刪除機器人建立的頻道。
 - `/assign_roles`：依據 JSON 檔案批次分配身分組（管理員）。
 - `/sync` / `/sync_global`：強制重新同步 Slash 指令（管理員）。
+- Instagram 貼文通知：每 5 分鐘輪詢設定好的公開 Instagram 個人頁面，有新貼文時在指定頻道通知並提及指定身分組，訊息會顯示預覽文字與圖片；領取身分組使用獨立的持久化面板。
+- `/instagram_setup`：用 Slash Command 設定公開 Instagram 帳號、通知頻道與通知身分組。
+- `/instagram_role_button`：在目前執行指令的頻道建立獨立的領取「走在時代尖端」身分組面板；不綁定 Instagram 通知頻道。
+
+### AI 助手
+- 在頻道中提及機器人即可取得 AI 回覆。
+- AI 會先使用頻道上下文、長期記憶與已匯入的招生簡章；資料不足時會透過 SearXNG 搜尋工具再回答。
+- `/rag_add`：由伺服器管理員或 `support_role_ids` 身分組上傳 PDF/UTF-8 文字格式簡章，供同一伺服器的 AI 查詢。
+- 頻道歷史會保留本機器人自己的回覆並以 assistant 角色傳給模型；其他機器人訊息會排除，其他成員與目前使用者會用穩定 ID 和說話者標籤區分。
+- RAG 會先用簡章標題／內容做關鍵字重排；查詢明確提到學校時會套用來源一致性門檻，不會把其他學校的相似向量結果當成答案。
+- 搜尋與簡章內容會被視為不可信參考資料，回答應標示來源，不會把其中的指令當成系統指令。
 
 ---
 
@@ -64,10 +75,29 @@ readme by claude
    | `starboard_min_reactions` | 觸發爆言所需反應人數（預設 `3`） |
    | `starboard_emoji` | 觸發爆言的 emoji（預設 `⭐`） |
    | `support_role_ids` | 擁有客服權限的身分組 ID 陣列 |
+   | `instagram_feed` | Instagram 公開 feed、通知頻道、通知身分組與輪詢設定 |
    | `transcript_dir` | 客服紀錄儲存路徑 |
    | `ticket_categories` | 面板可選分類（`label`、`value`、`channel_prefix`） |
    | `blocked_keywords` | 禁止出現的字詞清單 |
    | `extensions` | 要載入的 Cog 模組路徑陣列 |
+
+---
+
+## Instagram Feed 配置
+
+不需要手動編輯 `config/bot.json` 的 Instagram 欄位。Bot 啟動並同步 Slash Command 後，在目標伺服器使用：
+
+```text
+/instagram_setup profile_url:https://www.instagram.com/帳號名稱/ channel:#通知頻道 role:@走在時代尖端
+```
+
+`profile_url` 也可以直接填 Instagram 帳號名稱。此指令需要伺服器管理權限或 `support_role_ids` 內的身分組，並會將設定保存到 Bot 設定檔，立即啟用輪詢。設定完成後，可以在設定的伺服器內任意頻道執行 `/instagram_role_button`，面板會建立在目前執行指令的頻道；Instagram 貼文通知本身不會附帶按鈕，仍會固定發送到 `/instagram_setup` 設定的通知頻道。`/instagram_setup` 目前設定的是單一全域 Instagram 目標；重複執行會更新現有設定。若 `INSTAGRAM_PROFILE_URL` 環境變數有值，會優先於 Slash Command 設定，請先清除該環境變數。
+
+如果 Slash Command 尚未出現，請確認根層 `guild_id` 已設定為目標伺服器 ID 後重啟 Bot，或使用管理員的 `/sync`；全域同步可能需要等待一段時間。
+
+Bot 會每 5 分鐘以不帶登入狀態的單次 HTTP GET 讀取公開 Instagram 個人頁面，解析頁面中公開呈現的貼文連結。**不支援 Instagram 登入、Cookie、私人 API、CAPTCHA、代理輪換或繞過反爬限制**。如果 Instagram 回傳登入頁、401/403 或暫時封鎖，Bot 會略過該次檢查，不會嘗試繞過限制。首次啟動會先記錄目前已存在的貼文，不會一次刷出歷史貼文。
+
+貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`，Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
 
 ---
 
