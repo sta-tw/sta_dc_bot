@@ -1,68 +1,64 @@
 {
-  "guild_id": 0,
-  "welcome_channel_id": 1349295394768556000,
-  "ticket_category_id": 1255354098870517800,
-  "ticket_panel_channel_id": 1255354098870517800,
-  "config_channel_id": 1439964830365913000,
-  "starboard_channel_id": 1255355900353314800,
-  "starboard_min_reactions": 3,
-  "starboard_emoji": "⭐",
-  "repeater_filtered_category_ids": [
-    1430114754462089200
-  ],
-  "repeater_filtered_response": "#   拒絕電神崇拜，從你我做起",
-  "support_role_ids": [
-    1307166765725384700
-  ],
-  "blocked_keywords": [],
-  "ticket_categories": [
-    {
-      "label": "一般協助",
-      "value": "general",
-      "description": "帳號、流程與一般諮詢",
-      "channel_prefix": "ticket-general",
-      "ai_hint": "一般問題"
+    "guild_id": 0,
+    "welcome_channel_id": 1349295394768556055,
+    "ticket_category_id": 1255354098870517771,
+    "ticket_panel_channel_id": 1255354098870517773,
+    "config_channel_id": 1439964830365913200,
+    "starboard_channel_id": 1255355900353314879,
+    "starboard_min_reactions": 3,
+    "starboard_emoji": "⭐",
+    "repeater_filtered_category_ids": [1430114754462089326],
+    "repeater_filtered_response": "#   拒絕電神崇拜，從你我做起",
+    "support_role_ids": [1307166765725384787],
+    "blocked_keywords": [],
+    "ticket_categories": [
+        {
+            "label": "一般協助",
+            "value": "general",
+            "description": "帳號、流程與一般諮詢",
+            "channel_prefix": "ticket-general",
+            "ai_hint": "一般問題"
+        },
+        {
+            "label": "活動資訊",
+            "value": "event",
+            "description": "活動時程、場地、報名相關問題",
+            "channel_prefix": "ticket-event",
+            "ai_hint": "活動相關"
+        },
+        {
+            "label": "技術支援",
+            "value": "tech",
+            "description": "系統操作或技術問題",
+            "channel_prefix": "ticket-tech",
+            "ai_hint": "技術支援"
+        }
+    ],
+    "transcript_dir": "data/transcripts",
+    "extensions": [
+        "bot.cogs.welcome",
+        "bot.cogs.admin_tools",
+        "bot.cogs.role_setup",
+        "bot.cogs.manage_application",
+        "bot.cogs.delete_channel",
+        "bot.cogs.set_category",
+        "bot.cogs.exchange_setup",
+        "bot.cogs.role_button",
+        "bot.cogs.member_verification",
+        "bot.cogs.suggestion_submission",
+        "bot.cogs.emoji",
+        "bot.cogs.repeater",
+        "bot.cogs.starboard",
+        "bot.cogs.king_of_nonsense",
+        "bot.cogs.ai_chat"
+    ],
+    "faq_content": "",
+    "llm": {
+        "model": "gemini-1.5-flash",
+        "max_sentences": 3,
+        "api_keys": []
     },
-    {
-      "label": "活動資訊",
-      "value": "event",
-      "description": "活動時程、場地、報名相關問題",
-      "channel_prefix": "ticket-event",
-      "ai_hint": "活動相關"
-    },
-    {
-      "label": "技術支援",
-      "value": "tech",
-      "description": "系統操作或技術問題",
-      "channel_prefix": "ticket-tech",
-      "ai_hint": "技術支援"
+    "discord": {
+        "bot_token": "從環境變數 DISCORD_TOKEN 讀取"
     }
-  ],
-  "transcript_dir": "data/transcripts",
-  "extensions": [
-    "bot.cogs.welcome",
-    "bot.cogs.admin_tools",
-    "bot.cogs.role_setup",
-    "bot.cogs.manage_application",
-    "bot.cogs.delete_channel",
-    "bot.cogs.set_category",
-    "bot.cogs.exchange_setup",
-    "bot.cogs.role_button",
-    "bot.cogs.member_verification",
-    "bot.cogs.suggestion_submission",
-    "bot.cogs.emoji",
-    "bot.cogs.repeater",
-    "bot.cogs.starboard",
-    "bot.cogs.king_of_nonsense",
-    "bot.cogs.ai_chat"
-  ],
-  "faq_content": "",
-  "llm": {
-    "model": "gemini-1.5-flash",
-    "max_sentences": 3,
-    "api_keys": []
-  },
-  "discord": {
-    "bot_token": "從環境變數 DISCORD_TOKEN 讀取"
-  }
 }
