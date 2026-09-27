@@ -72,29 +72,18 @@ class LeaderboardView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         start = self.page * self.PAGE_SIZE
-        page_entries = self.entries[start:start + self.PAGE_SIZE]
+        page_entries = self.entries[start : start + self.PAGE_SIZE]
 
         lines: list[str] = []
         for offset, (member, message_count) in enumerate(page_entries):
             rank = start + offset + 1
-            if rank == 1:
-                marker = "🥇"
-            elif rank == 2:
-                marker = "🥈"
-            elif rank == 3:
-                marker = "🥉"
-            else:
-                marker = f"#{rank}"
-
+            marker = f"#{rank}"
             display_name = discord.utils.escape_markdown(member.display_name)
-            lines.append(
-                f"{marker} **{display_name}**\n"
-                f"> **{message_count:,}** 則訊息"
-            )
+            lines.append(f"{marker} **{display_name}** **{message_count:,}** 則訊息")
 
         embed = discord.Embed(
-            title="🏆 最佳幹話王",
-            description="\n\n".join(lines) if lines else "目前還沒有可顯示的排名。",
+            title="最佳幹話王",
+            description="\n".join(lines) if lines else "目前還沒有可顯示的排名。",
             color=discord.Color.gold(),
         )
         if self.guild.icon:
@@ -110,13 +99,7 @@ class LeaderboardView(discord.ui.View):
         return embed
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.owner_id:
-            return True
-        await interaction.response.send_message(
-            "只有叫出這份排行榜的人可以翻頁。",
-            ephemeral=True,
-        )
-        return False
+        return True
 
     async def _show_page(self, interaction: discord.Interaction) -> None:
         self._sync_buttons()
@@ -305,11 +288,9 @@ class KingOfNonsense(commands.Cog):
                 self._history_cutoffs[guild.id] = cutoff
                 await db.clear_message_counts()
 
-            counts, scanned_messages, scanned_channels = (
-                await self._scan_guild_history(
-                    guild,
-                    cutoff=cutoff,
-                )
+            counts, scanned_messages, scanned_channels = await self._scan_guild_history(
+                guild,
+                cutoff=cutoff,
             )
 
             async with write_lock:
@@ -367,15 +348,13 @@ class KingOfNonsense(commands.Cog):
         try:
             seeded = await db.is_message_history_seeded()
             if not seeded:
-                await interaction.edit_original_response(
-                    content="第一次使用，正在統計 Bot 有權限讀取的歷史訊息……"
-                )
+                await interaction.edit_original_response(content="第一次載入請等待....")
                 await self._ensure_history_seeded(guild, db)
 
             entries = await self._get_current_member_entries(guild, db)
         except Exception as exc:
             self.bot.logger.exception(
-                "最佳幹話王建立排行榜失敗(guild=%s)",
+                "failed(guild=%s)",
                 guild.id,
                 exc_info=exc,
             )
