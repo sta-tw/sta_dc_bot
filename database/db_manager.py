@@ -97,6 +97,86 @@ class DatabaseManager:
                     status TEXT
                 )
             ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS message_counts (
+                    user_id INTEGER PRIMARY KEY,
+                    message_count INTEGER NOT NULL DEFAULT 0
+                )
+            ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS message_stats_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            ''')
+            await db.commit()
+
+    async def increment_message_count(self, user_id: int, amount: int = 1):
+        if amount <= 0:
+            return
+
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute('''
+                INSERT INTO message_counts (user_id, message_count)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    message_count = message_counts.message_count + excluded.message_count
+            ''', (int(user_id), int(amount)))
+            await db.commit()
+
+    async def bulk_increment_message_counts(self, counts: Dict[int, int]):
+        rows = [
+            (int(user_id), int(message_count))
+            for user_id, message_count in counts.items()
+            if int(message_count) > 0
+        ]
+        if not rows:
+            return
+
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.executemany('''
+                INSERT INTO message_counts (user_id, message_count)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    message_count = message_counts.message_count + excluded.message_count
+            ''', rows)
+            await db.commit()
+
+    async def clear_message_counts(self):
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute('DELETE FROM message_counts')
+            await db.commit()
+
+    async def get_message_leaderboard(self) -> List[Dict[str, int]]:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute('''
+                SELECT user_id, message_count
+                FROM message_counts
+                WHERE message_count > 0
+                ORDER BY message_count DESC, user_id ASC
+            ''')
+            rows = await cursor.fetchall()
+            return [
+                {"user_id": int(row[0]), "message_count": int(row[1])}
+                for row in rows
+            ]
+
+    async def is_message_history_seeded(self) -> bool:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute(
+                "SELECT value FROM message_stats_meta WHERE key = ?",
+                ("history_seeded",),
+            )
+            row = await cursor.fetchone()
+            return bool(row and row[0] == "1")
+
+    async def set_message_history_seeded(self, seeded: bool):
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute('''
+                INSERT INTO message_stats_meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ''', ("history_seeded", "1" if seeded else "0"))
             await db.commit()
 
     async def save_application_channel(self, user_id: int, channel_id: int):

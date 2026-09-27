@@ -1,16 +1,18 @@
 {
   "guild_id": 0,
-  "welcome_channel_id": 1349295394768556055,
-  "ticket_category_id": 1255354098870517771,
-  "ticket_panel_channel_id": 1255354098870517773,
-  "config_channel_id": 1439964830365913200,
-  "starboard_channel_id": 1255355900353314879,
+  "welcome_channel_id": 1349295394768556000,
+  "ticket_category_id": 1255354098870517800,
+  "ticket_panel_channel_id": 1255354098870517800,
+  "config_channel_id": 1439964830365913000,
+  "starboard_channel_id": 1255355900353314800,
   "starboard_min_reactions": 3,
   "starboard_emoji": "⭐",
-  "repeater_filtered_category_ids": [1430114754462089326],
+  "repeater_filtered_category_ids": [
+    1430114754462089200
+  ],
   "repeater_filtered_response": "#   拒絕電神崇拜，從你我做起",
   "support_role_ids": [
-    1307166765725384787
+    1307166765725384700
   ],
   "blocked_keywords": [],
   "ticket_categories": [
@@ -51,6 +53,7 @@
     "bot.cogs.emoji",
     "bot.cogs.repeater",
     "bot.cogs.starboard",
+    "bot.cogs.king_of_nonsense",
     "bot.cogs.ai_chat"
   ],
   "faq_content": "",
