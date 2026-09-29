@@ -41,6 +41,13 @@ readme by claude
 - RAG 會先用簡章標題／內容做關鍵字重排；查詢明確提到學校時會套用來源一致性門檻，不會把其他學校的相似向量結果當成答案。
 - 搜尋與簡章內容會被視為不可信參考資料，回答應標示來源，不會把其中的指令當成系統指令。
 
+### 資源彙整編輯與審核
+- `/resource_setup`：由具有「管理伺服器」權限的管理員指定五個正式資源頻道、審核頻道及通知身分組；初始化時由 Database 建立五份 Markdown 文件，Bot 在各正式頻道建立一則管理訊息。
+- `/resource_editor`：發布持久化的「開啟編輯器」按鈕，啟動 Discord Activity。編輯器可修改現役文件的 Markdown 原文、預覽 Markdown 及查看 Diff。
+- 提交內容會先以 `base_version` 儲存為 Draft 並建立 Review Thread；只有重新驗證後具有「管理伺服器」或「管理員」Discord 權限的人員可批准或拒絕。通知身分組只負責提醒，不代表審核權限。
+- 核准後 Database 版本遞增，再由 Bot 編輯原有正式訊息；`/resource_sync` 可將 Database 正式內容重新同步到五個頻道。人工修改的 Discord 訊息不會反向寫入 Database。
+- 「活動資訊分享」已停用：既有正式訊息、文件與草稿保留，但不再出現在編輯器，也不再建立草稿、審核或自動同步。
+
 ---
 
 ## 安裝步驟
@@ -62,6 +69,9 @@ readme by claude
    ```
    編輯 `.env` 填入：
    - `DISCORD_TOKEN`：Discord 機器人 Token
+   - `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET`：Discord Application OAuth 憑證（Client Secret 僅保留在伺服器端）
+   - `RESOURCE_WEB_HOST`、`RESOURCE_WEB_PORT`：Web/API 綁定位址與連接埠（預設 `0.0.0.0:8080`）
+   - `RESOURCE_STANDALONE_ENABLED`、`RESOURCE_STANDALONE_GUILD_ID`、`RESOURCE_STANDALONE_REDIRECT_URI`：只供本機獨立測試；預設停用，詳見下方說明
 
 4. **編輯 `config/bot.json`：**
 
@@ -98,6 +108,36 @@ readme by claude
 Bot 會每 5 分鐘以不帶登入狀態的單次 HTTP GET 讀取公開 Instagram 個人頁面，解析頁面中公開呈現的貼文連結。**不支援 Instagram 登入、Cookie、私人 API、CAPTCHA、代理輪換或繞過反爬限制**。如果 Instagram 回傳登入頁、401/403 或暫時封鎖，Bot 會略過該次檢查，不會嘗試繞過限制。首次啟動會先記錄目前已存在的貼文，不會一次刷出歷史貼文。
 
 貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`，Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
+
+---
+
+## 資源彙整 Activity 部署
+
+資源編輯器使用與 Bot 同一個 Python 程序提供的 HTTP API，Activity 網頁位於 `/activity`，API 預設監聽 `0.0.0.0:8080`。Discord Activity 必須使用公開 HTTPS 網域；請在反向代理終止 TLS，將 HTTPS 流量轉送至 Bot 的 Web 連接埠。Docker Compose 會發布 `RESOURCE_WEB_PORT`（預設 8080）。不要將 `DISCORD_CLIENT_SECRET` 放進網頁或提交至版控。
+
+Discord SDK 由專案內的 `/activity/discord-sdk.js` 提供，避免 Discord 代理的 CSP 擋下外部 CDN。此檔案已納入部署；更新前端 SDK 時，在 `activity/` 執行 `npm ci` 和 `npm run build`，一併更新鎖檔、bundle 及授權聲明，Bot 執行時不需要 Node.js。
+
+首次使用前，請在 Discord Developer Portal 完成以下設定：
+
+1. 使用 Bot 所屬的 Discord Application 啟用 Activities；在 **Activities → URL Mappings** 只保留 Prefix `/`、Target `<你的網域>`（例如 `stabot.justin0711.com`，不含 `https://`、`/activity` 或尾斜線），刪除其他重疊 Mapping。首頁 `/` 會提供編輯器，`/activity`、靜態檔及 `/api/` 也會經此 Mapping 存取。不要直接在瀏覽器開啟公開網址測試 Activity：必須在 Discord 伺服器頻道執行 `/resource_editor` 並按「開啟編輯器」，才能取得 Discord 提供的啟動參數。
+2. 在 OAuth2 Redirects 登記 Activity OAuth 所需的 Redirect URI；依 Discord Activity 文件使用 `https://127.0.0.1` placeholder。Activity 的 `authorize` 與伺服器端 token exchange 不傳送 `redirect_uri`。在 `.env` 設定同一個應用程式的 `DISCORD_CLIENT_ID` 與 `DISCORD_CLIENT_SECRET`。若要使用下方的本機獨立模式，還要另外登記 `RESOURCE_STANDALONE_REDIRECT_URI` 指定的 localhost callback。
+3. 讓 Activity 網域可透過 HTTPS 從 Discord 用戶端連線；不要將反向代理限制為只有 Docker 內部可存取。
+4. 邀請 Bot 至目標伺服器並授予正式資源頻道的檢視、發送訊息及嵌入連結權限；審核頻道還需建立公開 Thread、在 Thread 發送訊息及管理 Thread 的權限。啟用伺服器成員意圖，供 API 驗證 Activity 使用者是否為該伺服器成員。
+
+重啟 Bot 並同步 Slash Command 後，在目標伺服器執行 `/resource_setup`，分別選取五個不同的正式資源頻道、審核頻道及通知身分組。Bot 會初始化 Database 文件並發布 Bot 管理的正式訊息。接著在要放入口的文字頻道執行 `/resource_editor`；入口訊息可在 Bot 重啟後繼續使用。一般伺服器成員可建立 Draft；批准或拒絕時，Bot 會重新從 Discord 取得審核者的成員權限，要求「管理伺服器」或「管理員」權限。通知身分組只用於 ping 管理員，不授予審核權限。
+
+### 本機獨立測試（不啟動 Discord Activity）
+
+如要先用一般瀏覽器測試完整編輯流程，不必公開部署 Activity，也不需要開啟 Activity URL Mapping。此模式仍會連到 Discord OAuth、Bot 和 Database；提交 Draft 會在測試伺服器建立真正的 Review Thread。請使用專用測試伺服器及測試 Bot/Application，避免碰觸正式資料。
+
+1. 在 `.env` 設定 `RESOURCE_STANDALONE_ENABLED=1`、`RESOURCE_STANDALONE_GUILD_ID=<測試伺服器 ID>`、`RESOURCE_WEB_HOST=127.0.0.1` 及 `RESOURCE_WEB_PORT=8080`。
+2. 將 `RESOURCE_STANDALONE_REDIRECT_URI` 設為 `http://127.0.0.1:8080/api/auth/standalone/callback`，並在 Discord Developer Portal 的 OAuth2 Redirects 登記完全相同的 URI。OAuth Client Secret 只放在 Bot 的 `.env`。
+3. 啟動 Bot，在測試伺服器執行 `/resource_setup`，設定五個測試資源頻道及審核頻道。Standalone 模式會限制 API、資源 Slash Command 與啟動同步只作用於 `RESOURCE_STANDALONE_GUILD_ID` 指定的伺服器。
+4. 在這台電腦的瀏覽器開啟 `http://127.0.0.1:8080/activity`，按「使用 Discord 登入」後即可編輯；也可在測試伺服器執行 `/resource_editor` 取得本機網址。
+
+此模式預設停用，且設定後 Web server 必須綁定 `127.0.0.1`；不要透過反向代理、Tunnel 或 Docker 公開埠提供此測試頁。Standalone OAuth callback 和 OAuth state 僅供本機登入，與 Activity 使用的 `https://127.0.0.1` placeholder 不同。
+
+各伺服器的資源文件與 Draft 儲存在 `data/database/{guild_id}.db`。正式資源訊息會直接以 Markdown 文字呈現，每份文件必須不超過 2,000 字元。Bot 啟動時及核准後只會以 Database 內容更新五份現役文件的原有訊息；若現役訊息曾被人工修改，可由管理員執行 `/resource_sync` 還原，不會將 Discord 內容寫回 Database。已停用的「活動資訊分享」訊息不再同步。
 
 ---
 
@@ -139,21 +179,21 @@ python main.py
 
 ```
 .
-├── main.py                  # 進入點
+├── main.py
 ├── config/
-│   ├── bot.json             # 主要設定
-│   ├── emoji.json           # Emoji 對應表
-│   └── guilds/{guild_id}/   # 各伺服器設定與驗證記錄
+│   ├── bot.json
+│   ├── emoji.json
+│   └── guilds/{guild_id}/
 ├── bot/
-│   ├── __init__.py          # Bot 建構函式
-│   ├── cogs/                # 功能模組 (Cog)
-│   └── utils/               # 設定讀取、路徑管理、角色工具
-├── utils/                   # UI View 元件
+│   ├── __init__.py
+│   ├── cogs/
+│   └── utils/
+├── utils/
 ├── database/
-│   └── db_manager.py        # SQLite 資料庫管理
+│   └── db_manager.py
 └── data/
-    ├── database/            # SQLite 資料庫檔案
-    └── transcripts/         # 客服單對話紀錄
+    ├── database/
+    └── transcripts/
 ```
 
 如需新增功能模組，在 `config/bot.json` 的 `extensions` 陣列加入模組路徑（例如 `bot.cogs.my_feature`）即可自動載入。

@@ -88,9 +88,107 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
             except discord.HTTPException:
                 bot.logger.exception("Failed to sync commands for guild %s", settings.guild_id)
         else:
-            await bot.tree.sync()
+            try:
+                await bot.tree.sync()
+            except discord.HTTPException as exc:
+                if exc.code != 50240:
+                    raise
+                try:
+                    sync_status = await _sync_global_resource_setup_command(bot)
+                except Exception:
+                    bot.logger.exception(
+                        "Targeted /resource_setup sync failed after global sync was "
+                        "rejected; no bulk replacement was attempted"
+                    )
+                    raise
+                bot.logger.warning(
+                    "Discord rejected global bulk command sync with code 50240; "
+                    "targeted /resource_setup sync status=%s. No other remote "
+                    "commands, including the Activity Entry Point, were modified: %s",
+                    sync_status,
+                    exc,
+                )
 
     return bot
+
+
+_OPTION_DEFAULTS = {
+    "choices": [],
+    "channel_types": [],
+    "autocomplete": False,
+    "min_value": None,
+    "max_value": None,
+    "min_length": None,
+    "max_length": None,
+    "options": [],
+    "name_localizations": {},
+    "description_localizations": {},
+}
+
+
+def _normalize_app_command_option(option: object) -> dict[str, object]:
+    if isinstance(option, dict):
+        option_data = option
+    else:
+        option_data = option.to_dict()
+
+    normalized: dict[str, object] = {}
+    for key, value in option_data.items():
+        if key in ("choices", "options"):
+            value = [_normalize_app_command_option(item) for item in value]
+        if key in _OPTION_DEFAULTS and value == _OPTION_DEFAULTS[key]:
+            continue
+        normalized[key] = value
+    return normalized
+
+
+async def _sync_global_resource_setup_command(bot: commands.Bot) -> str:
+    """Update only /resource_setup after Discord rejects a global bulk sync."""
+    local_command = bot.tree.get_command("resource_setup")
+    if local_command is None:
+        return "local command unavailable"
+
+    translator = bot.tree.translator
+    if translator is None:
+        local_payload = local_command.to_dict(bot.tree)
+    else:
+        local_payload = await local_command.get_translated_payload(bot.tree, translator)
+
+    remote_commands = await bot.tree.fetch_commands()
+    remote_command = next(
+        (
+            command
+            for command in remote_commands
+            if command.name == "resource_setup"
+            and command.type == discord.AppCommandType.chat_input
+        ),
+        None,
+    )
+
+    desired_description = local_payload["description"]
+    desired_options = local_payload.get("options", [])
+    if remote_command is not None:
+        remote_options = [option.to_dict() for option in remote_command.options]
+        if (
+            remote_command.description == desired_description
+            and [_normalize_app_command_option(option) for option in remote_options]
+            == [_normalize_app_command_option(option) for option in desired_options]
+        ):
+            return "already matches"
+
+        await bot.http.edit_global_command(
+            bot.application_id,
+            remote_command.id,
+            {
+                "description": desired_description,
+                "options": desired_options,
+            },
+        )
+        return "updated"
+
+    await bot.http.upsert_global_command(bot.application_id, local_payload)
+    return "created"
+
 
 async def _load_extensions(bot: commands.Bot, extensions: Iterable[str]) -> None:
     for ext in extensions:

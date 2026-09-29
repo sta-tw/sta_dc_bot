@@ -63,7 +63,8 @@
     "bot.cogs.repeater",
     "bot.cogs.starboard",
     "bot.cogs.ai_chat",
-    "bot.cogs.instagram_feed"
+    "bot.cogs.instagram_feed",
+    "bot.cogs.resource_library"
   ],
   "faq_content": "",
   "llm": {

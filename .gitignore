@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+activity/node_modules/
 
 *.log
 

@@ -89,6 +89,21 @@ def normalise_instagram_profile_url(value: str) -> str:
     return value
 
 
+def _is_same_instagram_profile_page(requested_url: str, response_url: str) -> bool:
+    requested = urlparse((requested_url or "").strip())
+    response = urlparse((response_url or "").strip())
+    if (response.hostname or "").lower() not in _INSTAGRAM_HOSTS:
+        return False
+    requested_segments = [segment for segment in requested.path.split("/") if segment]
+    response_segments = [segment for segment in response.path.split("/") if segment]
+    return (
+        requested_segments
+        and len(requested_segments) == len(response_segments)
+        and [segment.lower() for segment in requested_segments]
+        == [segment.lower() for segment in response_segments]
+    )
+
+
 def fetch_feed(
     url: str,
     *,
@@ -137,6 +152,8 @@ def fetch_public_profile(
         },
     )
     with urlopen(request, timeout=max(1.0, float(timeout))) as response:
+        if not _is_same_instagram_profile_page(url, response.geturl()):
+            raise ValueError("Instagram profile response redirected away from configured profile")
         payload = response.read(MAX_PROFILE_BYTES + 1)
 
     if len(payload) > MAX_PROFILE_BYTES:

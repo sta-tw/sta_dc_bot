@@ -1,0 +1,15 @@
+{
+  "name": "sta-resource-activity",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build-sdk.mjs"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "2.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

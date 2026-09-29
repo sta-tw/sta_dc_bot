@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>資源彙整編輯器</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232d3439'/%3E%3Cpath d='M32 10l6 16 16 6-16 6-6 16-6-16-16-6 16-6z' fill='%23fcf6dd'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/activity/styles.css?v=sta-theme-2" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <p id="app-mode" class="eyebrow">DISCORD ACTIVITY</p>
+          <h1>資源彙整編輯器</h1>
+        </div>
+        <div id="connection-status" class="connection-status" role="status">連線中…</div>
+      </header>
+
+      <main class="workspace">
+        <section class="editor-pane" aria-label="資源文件編輯器">
+          <div class="toolbar">
+            <div>
+              <p id="document-meta" class="document-meta">請選擇右側文件</p>
+              <p id="edit-status" class="edit-status">載入資源編輯器中…</p>
+            </div>
+            <div class="toolbar-actions">
+              <button id="reload-button" class="button button-quiet" type="button" disabled>重新載入</button>
+              <button id="preview-button" class="button button-secondary" type="button" disabled>預覽 / Diff</button>
+              <button id="submit-button" class="button button-primary" type="button" disabled>提交審核</button>
+            </div>
+          </div>
+
+          <div id="editor-content" class="editor-content">
+            <div class="empty-state">
+              <div class="empty-icon" aria-hidden="true">✦</div>
+              <h2>載入資源文件</h2>
+              <p>登入後，請從右側選擇要編輯的文件。</p>
+            </div>
+          </div>
+
+          <section id="preview-panel" class="preview-panel" hidden aria-label="Markdown 預覽與修改差異">
+            <div class="preview-header">
+              <div>
+                <p class="eyebrow">REVIEW BEFORE SUBMIT</p>
+                <h2>預覽與修改 Diff</h2>
+              </div>
+              <button id="close-preview" class="icon-button" type="button" aria-label="關閉預覽">×</button>
+            </div>
+            <div class="preview-tabs" role="tablist" aria-label="預覽模式">
+              <button id="preview-tab" class="tab-button active" type="button" role="tab">最終 Markdown</button>
+              <button id="diff-tab" class="tab-button" type="button" role="tab">本次修改 Diff</button>
+            </div>
+            <pre id="preview-output" class="code-preview"></pre>
+          </section>
+        </section>
+
+        <aside id="channel-panel" class="channel-panel" aria-label="資源頻道導覽">
+          <div class="channel-panel-header">
+            <div>
+              <p class="eyebrow">RESOURCE CHANNELS</p>
+              <h2>資源文件</h2>
+            </div>
+            <button id="toggle-channel-panel" class="icon-button" type="button" aria-label="收合頻道導覽" aria-expanded="true">‹</button>
+          </div>
+          <nav id="resource-navigation" class="resource-navigation" aria-label="選擇資源文件">
+            <p class="navigation-placeholder">登入後會載入五份文件。</p>
+          </nav>
+          <div class="panel-note">
+            <span class="note-dot" aria-hidden="true"></span>
+            <p>提交內容會進入審核，核准後才會更新正式頻道。</p>
+          </div>
+        </aside>
+      </main>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+    <script type="module" src="/activity/app.js?v=sta-theme-4"></script>
+  </body>
+</html>

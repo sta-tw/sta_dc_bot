@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    ports:
+      - "${RESOURCE_WEB_PORT:-8080}:${RESOURCE_WEB_PORT:-8080}"
     volumes:
       - ./:/app
 

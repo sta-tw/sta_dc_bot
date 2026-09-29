@@ -246,6 +246,26 @@ def test_parse_public_profile_html_and_profile_url_normalization():
     assert not feed.is_valid_instagram_profile_url("https://www.instagram.com/p/ABC123/")
 
 
+def test_fetch_public_profile_rejects_redirect_to_login(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def geturl(self):
+            return "https://www.instagram.com/accounts/login/?next=%2Fexample%2F"
+
+        def read(self, limit):
+            return b"login"
+
+    monkeypatch.setattr(feed, "urlopen", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(ValueError, match="redirected away"):
+        feed.fetch_public_profile("https://www.instagram.com/example/")
+
+
 def test_instagram_post_url_normalization():
     assert feed.normalise_instagram_post_url("/p/ABC123/") == "https://www.instagram.com/p/ABC123/"
     assert (
