@@ -62,6 +62,7 @@
     "bot.cogs.emoji",
     "bot.cogs.repeater",
     "bot.cogs.starboard",
+    "bot.cogs.king_of_nonsense",
     "bot.cogs.ai_chat",
     "bot.cogs.instagram_feed",
     "bot.cogs.resource_library"
