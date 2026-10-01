@@ -70,7 +70,10 @@
   "llm": {
     "model": "gemini-1.5-flash",
     "max_sentences": 3,
-    "api_keys": []
+    "api_keys": [],
+    "disabled_channel_ids": [
+      1255354098870517773
+    ]
   },
   "discord": {
     "bot_token": "從環境變數 DISCORD_TOKEN 讀取"

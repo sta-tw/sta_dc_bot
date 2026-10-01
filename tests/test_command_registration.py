@@ -8,7 +8,8 @@ import pytest
 from discord import app_commands
 from discord.ext import commands
 
-from bot import _sync_global_resource_setup_command
+from bot import _sync_global_commands, _sync_global_resource_setup_command
+from bot.cogs.ai_chat import AiChat
 from bot.cogs.resource_library import ResourceLibraryCog
 
 
@@ -42,6 +43,7 @@ def _make_bot() -> commands.Bot:
             callback=_resource_setup_callback,
         )
     )
+    bot.tree.add_command(AiChat.llm_channel)
     return bot
 
 
@@ -190,6 +192,35 @@ async def test_global_50240_fallback_upserts_only_when_resource_setup_is_missing
     bot.http.upsert_global_command.assert_awaited_once_with(
         APPLICATION_ID,
         local_payload,
+    )
+    bot.http.edit_global_command.assert_not_awaited()
+    bot.http.bulk_upsert_global_commands.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_global_50240_fallback_syncs_llm_channel_without_bulk_replacement():
+    bot = _make_bot()
+    bot.http.get_global_commands.return_value = [
+        _remote_command(bot, 3001),
+        _remote_command(bot, 3002, name="another_command"),
+        _entry_point_command(),
+    ]
+    llm_channel = bot.tree.get_command("llm_channel")
+    assert llm_channel is not None
+    llm_channel_payload = llm_channel.to_dict(bot.tree)
+
+    statuses = await _sync_global_commands(
+        bot,
+        ("resource_setup", "llm_channel"),
+    )
+
+    assert statuses == {
+        "resource_setup": "already matches",
+        "llm_channel": "created",
+    }
+    bot.http.upsert_global_command.assert_awaited_once_with(
+        APPLICATION_ID,
+        llm_channel_payload,
     )
     bot.http.edit_global_command.assert_not_awaited()
     bot.http.bulk_upsert_global_commands.assert_not_awaited()

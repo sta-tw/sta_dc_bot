@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -64,6 +65,7 @@ class Settings:
     blocked_keywords: list[str] = field(default_factory=list)
     llm_max_sentences: int = 3
     llm_api_keys: list[str] = field(default_factory=list)
+    llm_disabled_channel_ids: list[int] = field(default_factory=list)
     config_channel_id: int | None = None
     starboard_channel_id: int | None = None
     starboard_min_reactions: int = 3
@@ -99,6 +101,8 @@ class Settings:
         blocked_keywords = [term.strip().lower() for term in data.get("blocked_keywords", []) if term.strip()]
 
         llm_settings = data.get("llm", {})
+        if not isinstance(llm_settings, dict):
+            llm_settings = {}
         llm_model = str(llm_settings.get("model", "gemini-1.5-flash"))
         llm_max_sentences = int(llm_settings.get("max_sentences", 3))
         llm_api_keys = [
@@ -106,6 +110,16 @@ class Settings:
             for key in llm_settings.get("api_keys", [])
             if isinstance(key, str) and key.strip()
         ]
+        raw_disabled_channel_ids = llm_settings.get("disabled_channel_ids", [])
+        llm_disabled_channel_ids: list[int] = []
+        if isinstance(raw_disabled_channel_ids, list):
+            for channel_id in raw_disabled_channel_ids:
+                try:
+                    parsed_channel_id = int(channel_id)
+                except (TypeError, ValueError):
+                    continue
+                if parsed_channel_id > 0 and parsed_channel_id not in llm_disabled_channel_ids:
+                    llm_disabled_channel_ids.append(parsed_channel_id)
         config_channel_id = int(data.get("config_channel_id", 0)) or None
         starboard_channel_id = int(data.get("starboard_channel_id", 0)) or None
         starboard_min_reactions = max(1, int(data.get("starboard_min_reactions", 3)))
@@ -152,6 +166,7 @@ class Settings:
             prompt_config=prompt_config,
             llm_max_sentences=max(1, llm_max_sentences),
             llm_api_keys=llm_api_keys,
+            llm_disabled_channel_ids=llm_disabled_channel_ids,
             config_channel_id=config_channel_id,
             starboard_channel_id=starboard_channel_id,
             starboard_min_reactions=starboard_min_reactions,
@@ -193,3 +208,37 @@ def get_env_or_default(name: str, default: str = "") -> str:
     from os import getenv
     result = getenv(name)
     return result if result and result.strip() else default
+
+
+def save_llm_disabled_channel_ids(path: Path, channel_ids: Iterable[int]) -> list[int]:
+    path = Path(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Bot configuration must contain a JSON object")
+
+    llm_settings = data.get("llm")
+    if not isinstance(llm_settings, dict):
+        llm_settings = {}
+    normalized_channel_ids: set[int] = set()
+    for channel_id in channel_ids:
+        parsed_channel_id = int(channel_id)
+        if parsed_channel_id > 0:
+            normalized_channel_ids.add(parsed_channel_id)
+    disabled_channel_ids = sorted(normalized_channel_ids)
+    llm_settings["disabled_channel_ids"] = disabled_channel_ids
+    data["llm"] = llm_settings
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+    return disabled_channel_ids

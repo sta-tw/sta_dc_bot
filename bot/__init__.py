@@ -94,18 +94,23 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
                 if exc.code != 50240:
                     raise
                 try:
-                    sync_status = await _sync_global_resource_setup_command(bot)
+                    sync_statuses = await _sync_global_commands(
+                        bot,
+                        ("resource_setup", "llm_channel"),
+                    )
                 except Exception:
                     bot.logger.exception(
-                        "Targeted /resource_setup sync failed after global sync was "
-                        "rejected; no bulk replacement was attempted"
+                        "Targeted command sync failed after global sync was rejected; "
+                        "no bulk replacement was attempted"
                     )
                     raise
                 bot.logger.warning(
                     "Discord rejected global bulk command sync with code 50240; "
-                    "targeted /resource_setup sync status=%s. No other remote "
-                    "commands, including the Activity Entry Point, were modified: %s",
-                    sync_status,
+                    "targeted /resource_setup status=%s and /llm_channel status=%s. "
+                    "No other remote commands, including the Activity Entry Point, "
+                    "were modified: %s",
+                    sync_statuses.get("resource_setup", "not attempted"),
+                    sync_statuses.get("llm_channel", "not attempted"),
                     exc,
                 )
 
@@ -142,9 +147,11 @@ def _normalize_app_command_option(option: object) -> dict[str, object]:
     return normalized
 
 
-async def _sync_global_resource_setup_command(bot: commands.Bot) -> str:
-    """Update only /resource_setup after Discord rejects a global bulk sync."""
-    local_command = bot.tree.get_command("resource_setup")
+async def _sync_global_chat_input_command(
+    bot: commands.Bot,
+    command_name: str,
+) -> str:
+    local_command = bot.tree.get_command(command_name)
     if local_command is None:
         return "local command unavailable"
 
@@ -159,7 +166,7 @@ async def _sync_global_resource_setup_command(bot: commands.Bot) -> str:
         (
             command
             for command in remote_commands
-            if command.name == "resource_setup"
+            if command.name == command_name
             and command.type == discord.AppCommandType.chat_input
         ),
         None,
@@ -188,6 +195,23 @@ async def _sync_global_resource_setup_command(bot: commands.Bot) -> str:
 
     await bot.http.upsert_global_command(bot.application_id, local_payload)
     return "created"
+
+
+async def _sync_global_commands(
+    bot: commands.Bot,
+    command_names: Iterable[str],
+) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for command_name in command_names:
+        statuses[command_name] = await _sync_global_chat_input_command(
+            bot,
+            command_name,
+        )
+    return statuses
+
+
+async def _sync_global_resource_setup_command(bot: commands.Bot) -> str:
+    return await _sync_global_chat_input_command(bot, "resource_setup")
 
 
 async def _load_extensions(bot: commands.Bot, extensions: Iterable[str]) -> None:

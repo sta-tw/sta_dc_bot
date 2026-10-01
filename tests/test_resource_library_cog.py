@@ -439,7 +439,8 @@ async def test_editor_entry_accepts_legacy_six_document_database(tmp_path, monke
 
     await ResourceLibraryCog.resource_editor.callback(cog, interaction)
 
-    assert "使用下方按鈕" in interaction.response.send_message.await_args.args[0]
+    assert interaction.response.send_message.await_args.args[0] == "如果你也有超棒的東西想和大家分享，點我就對了"
+    assert isinstance(interaction.response.send_message.await_args.kwargs["view"], discord.ui.View)
 
 
 @pytest.mark.asyncio

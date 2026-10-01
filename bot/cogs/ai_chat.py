@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 from openai import APIConnectionError, APITimeoutError, BadRequestError, OpenAI, RateLimitError
 
+from bot.utils.config import save_llm_disabled_channel_ids
 from bot.utils.ai_context import calculate_output_tokens, compact_prompt, estimate_tokens, trim_lines, trim_text
 from bot.utils.ai_rag import AdmissionGuideStore, RagHit
 from bot.utils.web_search import SearxngSearch
@@ -67,12 +68,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _decode_env_text(value: str) -> str:
-    """Decode escaped newlines commonly used in dotenv prompt values."""
     return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\r")
 
 
 def _quote_text(text: str) -> str:
-    """Make untrusted multiline text visibly quoted in the prompt."""
     lines = str(text or "").splitlines() or [""]
     return "\n".join(f"> {line}" for line in lines)
 
@@ -550,7 +549,6 @@ class AiChat(commands.Cog):
         user_name: str,
         text: str,
     ) -> None:
-        """Keep non-mentioned human messages for the configured memory scope."""
         if self.memory_collection is None:
             return
         text = text.strip()
@@ -860,6 +858,81 @@ class AiChat(commands.Cog):
         support_role_ids = set(getattr(getattr(self.bot, "settings", None), "support_role_ids", []) or [])
         return any(getattr(role, "id", None) in support_role_ids for role in getattr(member, "roles", []))
 
+    def _is_llm_disabled_channel(
+        self,
+        channel_id: int,
+        parent_channel_id: int | None = None,
+    ) -> bool:
+        settings = getattr(self.bot, "settings", None)
+        disabled_channel_ids = getattr(settings, "llm_disabled_channel_ids", []) or []
+        return channel_id in disabled_channel_ids or parent_channel_id in disabled_channel_ids
+
+    @app_commands.command(name="llm_channel", description="設定指定頻道是否允許使用 LLM")
+    @app_commands.guild_only()
+    @app_commands.describe(
+        channel="要設定的文字頻道",
+        enabled="是否允許在此頻道使用 LLM",
+    )
+    async def llm_channel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        enabled: bool,
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("請在伺服器內使用此指令。", ephemeral=True)
+            return
+        if not self._can_manage_rag(interaction):
+            await interaction.response.send_message("需要伺服器管理權限或客服身分組。", ephemeral=True)
+            return
+        if getattr(getattr(channel, "guild", None), "id", None) != guild.id:
+            await interaction.response.send_message("頻道必須屬於目前的伺服器。", ephemeral=True)
+            return
+
+        settings = getattr(self.bot, "settings", None)
+        if settings is None:
+            await interaction.response.send_message("找不到 Bot 設定，無法變更 LLM 頻道。", ephemeral=True)
+            return
+        disabled_channel_ids = {
+            int(channel_id)
+            for channel_id in getattr(settings, "llm_disabled_channel_ids", []) or []
+        }
+        should_disable = not enabled
+        if (channel.id in disabled_channel_ids) == should_disable:
+            state = "停用" if should_disable else "啟用"
+            await interaction.response.send_message(
+                f"{channel.mention} 已經是 LLM {state}狀態。",
+                ephemeral=True,
+            )
+            return
+
+        settings_path = getattr(self.bot, "settings_path", None)
+        if settings_path is None:
+            settings_path = getattr(settings, "config_path", None)
+        if settings_path is None:
+            await interaction.response.send_message("找不到 Bot 設定檔路徑，無法儲存變更。", ephemeral=True)
+            return
+
+        if enabled:
+            disabled_channel_ids.discard(channel.id)
+        else:
+            disabled_channel_ids.add(channel.id)
+        try:
+            saved_channel_ids = save_llm_disabled_channel_ids(settings_path, disabled_channel_ids)
+        except (OSError, TypeError, ValueError) as exc:
+            self.bot.logger.warning("儲存 LLM 頻道設定失敗：%s", exc)
+            await interaction.response.send_message(f"儲存 LLM 頻道設定失敗：{exc}", ephemeral=True)
+            return
+
+        settings.llm_disabled_channel_ids = saved_channel_ids
+        state = "已啟用" if enabled else "已停用"
+        details = "" if enabled else "此頻道訊息也不會寫入長期記憶。"
+        await interaction.response.send_message(
+            f"{channel.mention} 的 LLM {state}。{details}",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="rag_add", description="加入一份供 AI 查詢的招生簡章（管理員）")
     @app_commands.describe(attachment="PDF 或 UTF-8 文字檔", title="簡章名稱，可省略")
     async def rag_add(
@@ -910,6 +983,11 @@ class AiChat(commands.Cog):
         if self.client is None:
             return
         if message.guild is None or message.author.bot:
+            return
+        if self._is_llm_disabled_channel(
+            message.channel.id,
+            getattr(message.channel, "parent_id", None),
+        ):
             return
         me = message.guild.me
         if me is None:

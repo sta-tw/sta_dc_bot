@@ -983,8 +983,7 @@ class ResourceLibraryCog(commands.Cog):
             )
             return
         await interaction.response.send_message(
-            "使用下方按鈕開啟資源彙整編輯器。提交內容會建立 Draft 並送交管理員審核；"
-            "正式頻道中的 Bot 訊息不會由使用者直接編輯。",
+            "如果你也有超棒的東西想和大家分享，點我就對了",
             view=ResourceEditorEntryView(),
             allowed_mentions=discord.AllowedMentions.none(),
         )
