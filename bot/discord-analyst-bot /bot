@@ -1,0 +1,119 @@
+import discord
+from discord.ext import commands
+import google.generativeai as genai
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+import os
+
+# --- 1. 簡易 HTTP 伺服器，讓 Render Web Service 判定為正常運作 ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Discord Bot is alive!")
+
+    def log_message(self, format, *args):
+        pass  # 忽略 HTTP access log 避免洗版
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# 背景啟動 Web 服務
+threading.Thread(target=run_web_server, daemon=True).start()
+
+# --- 2. 讀取環境變數 ---
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+
+if not DISCORD_TOKEN or not GEMINI_KEY:
+    raise ValueError("環境變數中缺少 DISCORD_TOKEN 或 GEMINI_API_KEY！")
+
+genai.configure(api_key=GEMINI_KEY)
+ai_model = genai.GenerativeModel("gemini-1.5-flash")
+
+# --- 3. Discord 機器人邏輯 ---
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f"機器人已在雲端啟動成功：{bot.user.name} (ID: {bot.user.id})")
+
+@bot.command(name="整理", aliases=["擷取", "sum", "extract"])
+async def summarize(ctx, limit: int = 30):
+    raw_content = ""
+    source_desc = ""
+
+    async with ctx.typing():
+        if ctx.message.reference:
+            target_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            source_desc = f"回覆自 {target_msg.author.display_name} 的訊息"
+            if target_msg.attachments:
+                att = target_msg.attachments[0]
+                if att.filename.endswith(('.txt', '.md', '.csv', '.json', '.log', '.py')):
+                    file_bytes = await att.read()
+                    raw_content = file_bytes.decode('utf-8', errors='ignore')
+                    source_desc += f"（附件：{att.filename}）"
+            if not raw_content:
+                raw_content = target_msg.content
+        elif ctx.message.attachments:
+            att = ctx.message.attachments[0]
+            if att.filename.endswith(('.txt', '.md', '.csv', '.json', '.log', '.py')):
+                file_bytes = await att.read()
+                raw_content = file_bytes.decode('utf-8', errors='ignore')
+                source_desc += f"上傳檔案：{att.filename}"
+            else:
+                await ctx.reply("目前支援解析文字格式檔案（.txt, .md, .csv 等）。")
+                return
+        else:
+            source_desc = f"頻道最近 {limit} 則對話紀錄"
+            messages = []
+            async for msg in ctx.channel.history(limit=limit):
+                if not msg.author.bot and msg.content.strip():
+                    messages.append(f"{msg.author.display_name}: {msg.content}")
+            messages.reverse()
+            raw_content = "\n".join(messages)
+
+        if not raw_content.strip():
+            await ctx.reply("未讀取到可供分析的文字資料。")
+            return
+
+        prompt = f"""
+        你是一位專業的資料分析與情報摘要專家。請嚴格解析以下內容，萃取核心資訊並依照指定格式條列整理：
+
+        【核心主旨】：用 1~2 句話精確說明事件、討論或檔案的核心內容。
+        【關鍵要素/數據】：條列文中提及的人事時地物、重要數值、技術規格、設定參數或重要連結。
+        【結論與待辦事項】：條列 3~5 點具體的結論、共識或後續行動項目 (Action Items)。
+
+        待分析資料內容：
+        {raw_content}
+        """
+
+        try:
+            response = ai_model.generate_content(prompt)
+            result_text = response.text
+
+            embed = discord.Embed(
+                title="📊 資料智能擷取與重點分析",
+                description=f"**資料來源**：{source_desc}",
+                color=0x2b2d31
+            )
+
+            if len(result_text) <= 3800:
+                embed.description += f"\n\n{result_text}"
+                await ctx.reply(embed=embed)
+            else:
+                await ctx.reply(embed=embed)
+                for chunk in [result_text[i:i+1900] for i in range(0, len(result_text), 1900)]:
+                    await ctx.send(chunk)
+        except Exception as e:
+            await ctx.reply(f"AI 擷取處理時發生錯誤：`{e}`")
+
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
