@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
-from datetime import datetime
+from uuid import uuid4
+
+from bot.utils.config_paths import ConfigPaths
+from bot.utils.message_history import (
+    HistoryProgress,
+    HistorySnapshot,
+    collect_history,
+    discover_scope,
+    is_countable_message,
+    load_snapshot,
+    next_boundary_id,
+)
 
 import discord
 from discord import app_commands
@@ -132,7 +142,11 @@ class KingOfNonsense(commands.Cog):
         self._db_init_locks: dict[int, asyncio.Lock] = {}
         self._write_locks: dict[int, asyncio.Lock] = {}
         self._seed_locks: dict[int, asyncio.Lock] = {}
-        self._history_cutoffs: dict[int, datetime] = {}
+        self._history_cutoffs: dict[int, int] = {}
+        self._seed_tokens: dict[int, str] = {}
+        self._snapshots: dict[int, HistorySnapshot | None] = {}
+        self._seed_tasks: dict[int, asyncio.Task] = {}
+        self._seed_progress: dict[int, HistoryProgress] = {}
 
     def _get_lock(
         self,
@@ -158,15 +172,16 @@ class KingOfNonsense(commands.Cog):
 
             db = DatabaseManager(guild.id, guild.name)
             await db.init_db()
+            snapshot_path = ConfigPaths.DATA_DIR / "leaderboard_preloads" / f"{guild.id}.json"
+            if not await db.is_message_history_seeded() or (
+                snapshot_path.exists() and not await db.is_message_history_verified()
+            ):
+                await self._prepare_history_seed(guild, db)
             self._dbs[guild.id] = db
             return db
 
     def _is_countable_message(self, message: discord.Message) -> bool:
-        return (
-            message.guild is not None
-            and not message.author.bot
-            and message.webhook_id is None
-        )
+        return is_countable_message(message)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -182,129 +197,72 @@ class KingOfNonsense(commands.Cog):
 
         async with write_lock:
             cutoff = self._history_cutoffs.get(guild.id)
-            if cutoff is not None and message.created_at < cutoff:
+            if cutoff is not None and message.id < cutoff:
                 return
             await db.increment_message_count(message.author.id)
-
-    async def _scan_messageable_history(
-        self,
-        channel,
-        *,
-        cutoff: datetime,
-        counts: Counter[int],
-    ) -> int:
-        scanned = 0
-        try:
-            async for message in channel.history(
-                limit=None,
-                before=cutoff,
-                oldest_first=False,
-            ):
-                if not self._is_countable_message(message):
-                    continue
-                counts[message.author.id] += 1
-                scanned += 1
-        except (
-            discord.Forbidden,
-            discord.NotFound,
-            discord.HTTPException,
-        ) as exc:
-            self.bot.logger.warning(
-                "最佳幹話王略過無法讀取的頻道/討論串 %s (%s): %s",
-                getattr(channel, "id", "?"),
-                getattr(channel, "name", "unknown"),
-                exc,
-            )
-        return scanned
-
-    async def _scan_guild_history(
-        self,
-        guild: discord.Guild,
-        *,
-        cutoff: datetime,
-    ) -> tuple[Counter[int], int, int]:
-        counts: Counter[int] = Counter()
-        seen_channel_ids: set[int] = set()
-        scanned_messages = 0
-        scanned_channels = 0
-
-        async def scan(channel) -> None:
-            nonlocal scanned_messages, scanned_channels
-            channel_id = getattr(channel, "id", None)
-            if channel_id is None or channel_id in seen_channel_ids:
-                return
-
-            seen_channel_ids.add(channel_id)
-            scanned_channels += 1
-            scanned_messages += await self._scan_messageable_history(
-                channel,
-                cutoff=cutoff,
-                counts=counts,
-            )
-
-        for channel in guild.text_channels:
-            await scan(channel)
-
-        for thread in guild.threads:
-            await scan(thread)
-
-        for parent in guild.channels:
-            archived_threads = getattr(parent, "archived_threads", None)
-            if archived_threads is None:
-                continue
-            try:
-                async for thread in archived_threads(limit=None):
-                    await scan(thread)
-            except (
-                discord.Forbidden,
-                discord.HTTPException,
-                TypeError,
-            ) as exc:
-                self.bot.logger.warning(
-                    "最佳幹話王無法列出 %s 的封存討論串: %s",
-                    getattr(parent, "id", "?"),
-                    exc,
-                )
-
-        return counts, scanned_messages, scanned_channels
 
     async def _ensure_history_seeded(
         self,
         guild: discord.Guild,
         db: DatabaseManager,
     ) -> bool:
-        if await db.is_message_history_seeded():
-            return False
-
-        seed_lock = self._get_lock(self._seed_locks, guild.id)
-        async with seed_lock:
+        async with self._get_lock(self._seed_locks, guild.id):
             if await db.is_message_history_seeded():
                 return False
-
-            cutoff = discord.utils.utcnow()
-            write_lock = self._get_lock(self._write_locks, guild.id)
-
-            async with write_lock:
-                self._history_cutoffs[guild.id] = cutoff
-                await db.clear_message_counts()
-
-            counts, scanned_messages, scanned_channels = await self._scan_guild_history(
-                guild,
-                cutoff=cutoff,
-            )
-
-            async with write_lock:
-                await db.bulk_increment_message_counts(counts)
-                await db.set_message_history_seeded(True)
-
+            if guild.id not in self._seed_tokens:
+                await self._prepare_history_seed(guild, db)
+                if await db.is_message_history_seeded():
+                    return False
+            cutoff_id = self._history_cutoffs[guild.id]
+            delay = (discord.utils.snowflake_time(cutoff_id) - discord.utils.utcnow()).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            progress = self._seed_progress.setdefault(guild.id, HistoryProgress())
+            async with asyncio.timeout(6 * 60 * 60):
+                scope = await discover_scope(guild, self.bot.user.id, progress)
+                counts = await collect_history(
+                    scope,
+                    upper_id=cutoff_id,
+                    progress=progress,
+                    snapshot=self._snapshots.get(guild.id),
+                )
+            snapshot = self._snapshots.get(guild.id)
+            async with self._get_lock(self._write_locks, guild.id):
+                committed = await db.finish_message_history_seed(
+                    self._seed_tokens[guild.id], counts, snapshot.checksum if snapshot else "full-history"
+                )
+            progress.phase = "統計完成"
             self.bot.logger.info(
                 "最佳幹話王歷史統計完成(guild=%s channels=%s messages=%s users=%s)",
-                guild.id,
-                scanned_channels,
-                scanned_messages,
-                len(counts),
+                guild.id, progress.channels_done, sum(counts.values()), len(counts),
             )
-            return True
+            return committed
+
+    async def _run_history_seed(self, guild: discord.Guild, db: DatabaseManager) -> None:
+        progress = self._seed_progress[guild.id]
+        try:
+            await self._ensure_history_seeded(guild, db)
+        except asyncio.CancelledError:
+            progress.error = "統計工作已取消"
+            raise
+        except Exception as exc:
+            progress.error = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            self.bot.logger.exception("最佳幹話王初始化失敗(guild=%s)", guild.id)
+
+    def _start_history_seed(self, guild: discord.Guild, db: DatabaseManager) -> HistoryProgress:
+        task = self._seed_tasks.get(guild.id)
+        if task is None or task.done():
+            self._seed_progress[guild.id] = HistoryProgress()
+            self._seed_tasks[guild.id] = asyncio.create_task(
+                self._run_history_seed(guild, db), name=f"leaderboard-seed-{guild.id}"
+            )
+        return self._seed_progress[guild.id]
+
+    async def cog_unload(self) -> None:
+        tasks = list(self._seed_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _get_current_member_entries(
         self,
@@ -313,9 +271,9 @@ class KingOfNonsense(commands.Cog):
     ) -> list[tuple[discord.Member, int]]:
         if not guild.chunked:
             try:
-                await guild.chunk(cache=True)
-            except (discord.ClientException, discord.HTTPException):
-                pass
+                await asyncio.wait_for(guild.chunk(cache=True), timeout=20)
+            except (discord.ClientException, discord.HTTPException, TimeoutError) as exc:
+                raise ValueError("成員資料尚未載入完成，請稍後重新查詢。") from exc
 
         rows = await db.get_message_leaderboard()
         entries: list[tuple[discord.Member, int]] = []
@@ -343,13 +301,19 @@ class KingOfNonsense(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True)
-        db = await self._get_db(guild)
 
         try:
+            db = await self._get_db(guild)
             seeded = await db.is_message_history_seeded()
             if not seeded:
-                await interaction.edit_original_response(content="第一次載入請等待....")
-                await self._ensure_history_seeded(guild, db)
+                previous = self._seed_progress.get(guild.id)
+                previous_error = previous.error if previous else None
+                progress = self._start_history_seed(guild, db)
+                text = progress.text()
+                if previous_error and progress.error is None:
+                    text = f"上次統計失敗：{previous_error}。已重新嘗試。\n" + text
+                await interaction.edit_original_response(content=text)
+                return
 
             entries = await self._get_current_member_entries(guild, db)
         except Exception as exc:
@@ -358,12 +322,13 @@ class KingOfNonsense(commands.Cog):
                 guild.id,
                 exc_info=exc,
             )
-            await interaction.edit_original_response(
-                content=(
-                    "排行榜統計失敗，請確認 Bot 擁有"
-                    "「查看頻道」與「讀取訊息歷史」權限。"
+            if not interaction.is_expired():
+                await interaction.edit_original_response(
+                    content=str(exc) if isinstance(exc, ValueError) else (
+                        "排行榜統計失敗，請確認 Bot 擁有"
+                        "「查看頻道」與「讀取訊息歷史」權限。"
+                    )
                 )
-            )
             return
 
         if not entries:

@@ -179,6 +179,67 @@ class DatabaseManager:
             ''', ("history_seeded", "1" if seeded else "0"))
             await db.commit()
 
+    async def is_message_history_verified(self) -> bool:
+        async with aiosqlite.connect(self.db_name) as db:
+            cursor = await db.execute(
+                "SELECT key, value FROM message_stats_meta WHERE key IN ('history_seeded', 'history_seed_version')"
+            )
+            metadata = dict(await cursor.fetchall())
+            return metadata.get("history_seeded") == "1" and metadata.get("history_seed_version") == "2"
+
+    async def begin_message_history_seed(self, token: str, cutoff_id: int, *, allow_legacy_reseed: bool = False):
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT key, value FROM message_stats_meta WHERE key IN ('history_seeded', 'history_seed_version')"
+            )
+            metadata = dict(await cursor.fetchall())
+            if metadata.get("history_seeded") == "1" and (
+                not allow_legacy_reseed or metadata.get("history_seed_version") == "2"
+            ):
+                await db.rollback()
+                return False
+            await db.execute("DELETE FROM message_counts")
+            await db.executemany('''
+                INSERT INTO message_stats_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ''', [
+                ("history_seeded", "0"),
+                ("history_seed_token", token),
+                ("history_live_boundary", str(cutoff_id)),
+            ])
+            await db.commit()
+            return True
+
+    async def finish_message_history_seed(self, token: str, counts: Dict[int, int], snapshot_id: str):
+        rows = [(int(user_id), int(count)) for user_id, count in counts.items() if int(count) > 0]
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT key, value FROM message_stats_meta WHERE key IN ('history_seeded', 'history_seed_token')"
+            )
+            metadata = dict(await cursor.fetchall())
+            if metadata.get("history_seeded") == "1":
+                await db.rollback()
+                return False
+            if metadata.get("history_seed_token") != token:
+                raise ValueError("歷史統計工作已被取代，拒絕重複合併。")
+            await db.executemany('''
+                INSERT INTO message_counts (user_id, message_count) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    message_count = message_counts.message_count + excluded.message_count
+            ''', rows)
+            await db.executemany('''
+                INSERT INTO message_stats_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ''', [
+                ("history_seeded", "1"),
+                ("history_seed_version", "2"),
+                ("history_snapshot_id", snapshot_id),
+            ])
+            await db.commit()
+            return True
+
     async def save_application_channel(self, user_id: int, channel_id: int):
         async with aiosqlite.connect(self.db_name) as db:
             await db.execute('''

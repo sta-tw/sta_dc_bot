@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,11 +13,20 @@ from database.resource_library import ResourceRepository
 
 
 class FakeRepository:
-    def __init__(self):
+    def __init__(self, document=None):
+        self.document = document
+        self.get_calls = []
         self.saved_message_ids = []
+
+    async def get_document(self, slug):
+        self.get_calls.append(slug)
+        if self.document is None or self.document["slug"] != slug:
+            return None
+        return dict(self.document)
 
     async def set_message_id(self, slug, message_id):
         self.saved_message_ids.append((slug, message_id))
+        self.document["message_id"] = message_id
 
 
 class FakeMessage:
@@ -29,6 +39,11 @@ class FakeMessage:
 
     async def edit(self, **kwargs):
         self.edits.append(kwargs)
+        if "content" in kwargs:
+            self.content = kwargs["content"]
+        if "embed" in kwargs:
+            self.embeds = [] if kwargs["embed"] is None else [kwargs["embed"]]
+        return self
 
 
 class FakeChannel:
@@ -40,11 +55,14 @@ class FakeChannel:
 
     async def fetch_message(self, message_id):
         self.fetch_calls.append(message_id)
+        if self.message is None or self.message.id != message_id:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown message")
         return self.message
 
     async def send(self, **kwargs):
         self.sent.append(kwargs)
-        return SimpleNamespace(id=9001)
+        self.message = FakeMessage(9000 + len(self.sent), author_id=999, content=kwargs["content"])
+        return self.message
 
 
 class FakeGuild:
@@ -127,6 +145,7 @@ async def test_approved_document_edits_the_existing_bot_message(monkeypatch):
         "updated_by": "42",
     }
 
+    cog._repositories[guild_id].document = document
     result = await cog.sync_document(document)
 
     assert result is message
@@ -164,6 +183,7 @@ async def test_sync_replaces_legacy_embed_with_plain_markdown(monkeypatch):
         "updated_by": "system",
     }
 
+    cog._repositories[guild_id].document = document
     result = await cog.sync_document(document)
 
     assert result is message
@@ -173,12 +193,12 @@ async def test_sync_replaces_legacy_embed_with_plain_markdown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sync_ignores_discord_generated_link_previews(monkeypatch):
+@pytest.mark.parametrize("preview_type", ["link", "article", "rich"])
+async def test_sync_ignores_discord_generated_previews(monkeypatch, preview_type):
     monkeypatch.setattr(discord, "TextChannel", FakeChannel)
     guild_id = 5001
     previews = [
-        discord.Embed.from_dict({"type": "link", "url": "https://example.org/"}),
-        discord.Embed.from_dict({"type": "article", "url": "https://example.org/article"}),
+        discord.Embed.from_dict({"type": preview_type, "url": "https://example.org/"}),
     ]
     message = FakeMessage(8001, author_id=999, embeds=previews, content="# 工具\n- [範例](https://example.org/)\n")
     guild = FakeGuild(guild_id, None)
@@ -197,6 +217,7 @@ async def test_sync_ignores_discord_generated_link_previews(monkeypatch):
         "updated_by": "system",
     }
 
+    cog._repositories[guild_id].document = document
     await cog.sync_document(document)
     await cog.sync_document(document)
 
@@ -231,6 +252,7 @@ async def test_sync_ignores_custom_emoji_ids_stripped_by_discord(monkeypatch):
         "updated_by": "system",
     }
 
+    cog._repositories[guild_id].document = document
     await cog.sync_document(document)
     await cog.sync_document(document)
 
@@ -259,6 +281,7 @@ async def test_sync_ignores_discord_trimmed_trailing_newlines(monkeypatch):
         "updated_by": "system",
     }
 
+    cog._repositories[guild_id].document = document
     result = await cog.sync_document(document)
 
     assert result is message
@@ -286,6 +309,7 @@ async def test_sync_creates_and_records_message_when_not_initialized(monkeypatch
         "updated_by": "system",
     }
 
+    cog._repositories[guild_id].document = document
     result = await cog.sync_document(document)
 
     assert result.id == 9001
@@ -293,6 +317,293 @@ async def test_sync_creates_and_records_message_when_not_initialized(monkeypatch
     assert channel.sent[0]["content"] == document["content_md"]
     assert "embed" not in channel.sent[0]
     assert repository.saved_message_ids == [("communities", 9001)]
+
+
+def _sync_cog(monkeypatch, *, content="# 工具\n\n", message_content="# 舊內容\n"):
+    monkeypatch.setattr(discord, "TextChannel", FakeChannel)
+    document = {
+        "guild_id": 5001,
+        "slug": "tools",
+        "title": "做備審的好工具",
+        "channel_id": 7001,
+        "message_id": 8001,
+        "content_md": content,
+        "version": 1,
+        "updated_by": "system",
+    }
+    message = FakeMessage(8001, author_id=999, content=message_content)
+    guild = FakeGuild(5001, None)
+    channel = FakeChannel(guild, message)
+    guild.channel = channel
+    cog = ResourceLibraryCog(FakeBot(guild))
+    repository = FakeRepository(dict(document))
+    cog._repositories[guild.id] = repository
+    cog._document_message_index[(guild.id, message.id)] = document["slug"]
+    return cog, repository, channel, document
+
+
+def _edit_payload(content, *, message_id=8001):
+    return SimpleNamespace(guild_id=5001, message_id=message_id, data={"content": content})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [{"embeds": []}, {"pinned": True}, {}])
+async def test_embed_only_raw_updates_do_not_reconcile(monkeypatch, data):
+    cog, repository, channel, _ = _sync_cog(monkeypatch)
+
+    await cog.on_raw_message_edit(SimpleNamespace(guild_id=5001, message_id=8001, data=data))
+
+    assert repository.get_calls == []
+    assert channel.fetch_calls == []
+    assert channel.message.edits == []
+
+
+@pytest.mark.asyncio
+async def test_own_edit_echo_and_regenerated_rich_preview_do_not_repeat_patch(monkeypatch):
+    cog, _, channel, document = _sync_cog(monkeypatch)
+    message = await cog.sync_document(document)
+    message.embeds = [discord.Embed.from_dict({"type": "rich", "url": "https://example.org/"})]
+
+    for _ in range(3):
+        await cog.on_raw_message_edit(_edit_payload(message.content))
+        await cog.on_raw_message_edit(SimpleNamespace(
+            guild_id=5001, message_id=8001, data={"embeds": [message.embeds[0].to_dict()]}
+        ))
+
+    assert len(message.edits) == 1
+    assert channel.fetch_calls == [8001]
+
+
+@pytest.mark.asyncio
+async def test_sync_accepts_returned_discord_content_without_a_normalization_loop(monkeypatch):
+    cog, _, channel, document = _sync_cog(monkeypatch, content="# 工具\r\n\r\n- 保留縮排  \r\n")
+    original = channel.message
+    returned = FakeMessage(8001, author_id=999)
+
+    async def normalized_edit(**kwargs):
+        original.edits.append(kwargs)
+        returned.content = kwargs["content"].replace("\r\n", "\n")
+        channel.message = returned
+        return returned
+
+    original.edit = normalized_edit
+
+    result = await cog.sync_document(document)
+    await cog.on_raw_message_edit(_edit_payload(returned.content))
+    await cog.on_raw_message_edit(_edit_payload("# 舊的排隊事件"))
+    await cog.sync_document(document)
+
+    assert result is returned
+    assert len(original.edits) == 1
+    assert returned.edits == []
+    assert channel.fetch_calls == [8001, 8001, 8001]
+    assert original.edits[0]["content"] == document["content_md"]
+
+
+@pytest.mark.asyncio
+async def test_real_content_tampering_is_restored_after_successful_sync(monkeypatch):
+    cog, _, channel, document = _sync_cog(monkeypatch)
+    message = await cog.sync_document(document)
+    message.content = "# 未審核的修改"
+
+    await cog.on_raw_message_edit(_edit_payload(message.content))
+    await cog.on_raw_message_edit(_edit_payload(message.content))
+
+    assert message.content == document["content_md"]
+    assert len(message.edits) == 2
+    assert channel.fetch_calls == [8001, 8001]
+
+
+@pytest.mark.asyncio
+async def test_new_document_version_invalidates_the_published_acknowledgement(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch)
+    message = await cog.sync_document(document)
+    repository.document.update(version=2, content_md="# 最新核准版本\n")
+
+    await cog.on_raw_message_edit(_edit_payload(message.content))
+
+    assert message.content == repository.document["content_md"]
+    assert len(message.edits) == 2
+    assert message.edits[-1]["content"] == "# 最新核准版本\n"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_syncs_serialize_before_fetch_and_patch_once(monkeypatch):
+    cog, _, channel, document = _sync_cog(monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    queued = asyncio.Event()
+    original_edit = channel.message.edit
+
+    async def blocked_edit(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original_edit(**kwargs)
+
+    async def second_sync():
+        queued.set()
+        return await cog.sync_document(document)
+
+    channel.message.edit = blocked_edit
+    first = asyncio.create_task(cog.sync_document(document))
+    await entered.wait()
+    second = asyncio.create_task(second_sync())
+    await queued.wait()
+    fetches_before_release = list(channel.fetch_calls)
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert fetches_before_release == [8001]
+    assert len(channel.message.edits) == 1
+    assert channel.sent == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_deletions_create_only_one_replacement(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch)
+    channel.message = None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    queued = asyncio.Event()
+    original_send = channel.send
+    payload = SimpleNamespace(guild_id=5001, message_id=8001)
+
+    async def blocked_send(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original_send(**kwargs)
+
+    async def second_delete():
+        queued.set()
+        await cog.on_raw_message_delete(payload)
+
+    channel.send = blocked_send
+    first = asyncio.create_task(cog.on_raw_message_delete(payload))
+    await entered.wait()
+    second = asyncio.create_task(second_delete())
+    await queued.wait()
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert channel.fetch_calls == [8001]
+    assert len(channel.sent) == 1
+    assert repository.saved_message_ids == [(document["slug"], 9001)]
+    assert repository.document["message_id"] == 9001
+    assert (5001, 8001) not in cog._document_message_index
+    assert cog._document_message_index[(5001, 9001)] == document["slug"]
+
+
+@pytest.mark.asyncio
+async def test_sync_reloads_latest_version_and_message_id_after_waiting_for_lock(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch)
+    lock = cog._get_sync_lock((5001, document["slug"]))
+    entered = asyncio.Event()
+
+    async def sync_stale_snapshot():
+        entered.set()
+        return await cog.sync_document(document)
+
+    async with lock:
+        task = asyncio.create_task(sync_stale_snapshot())
+        await entered.wait()
+        repository.document.update(version=2, message_id=8002, content_md="# 最新版本\n")
+        channel.message = FakeMessage(8002, author_id=999, content="# 舊訊息")
+    result = await task
+
+    assert channel.fetch_calls == [8002]
+    assert result.content == repository.document["content_md"]
+    assert result.edits[0]["content"] == "# 最新版本\n"
+
+
+@pytest.mark.asyncio
+async def test_terminal_429_blocks_queued_and_new_reconciliation_until_retry_after(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr("bot.cogs.resource_library.monotonic", lambda: clock[0])
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    queued = asyncio.Event()
+    error = discord.HTTPException(
+        SimpleNamespace(status=429, reason="Too Many Requests", headers={"Retry-After": "120.5"}),
+        "You are being rate limited.",
+    )
+    original_edit = channel.message.edit
+
+    async def limited_edit(**kwargs):
+        entered.set()
+        await release.wait()
+        raise error
+
+    async def second_edit():
+        queued.set()
+        await cog.on_raw_message_edit(_edit_payload("# 舊內容\n"))
+
+    channel.message.edit = AsyncMock(side_effect=limited_edit)
+    first = asyncio.create_task(cog.on_raw_message_edit(_edit_payload("# 舊內容\n")))
+    await entered.wait()
+    second = asyncio.create_task(second_edit())
+    await queued.wait()
+    repository.document.update(version=2, content_md="# 最新核准版本\n")
+    release.set()
+    await asyncio.gather(first, second)
+    await cog.on_raw_message_edit(_edit_payload("# 另一個事件"))
+    await cog.on_raw_message_delete(SimpleNamespace(guild_id=5001, message_id=8001))
+    clock[0] = 220.0
+    with pytest.raises(ValueError, match="退避"):
+        await cog.sync_document(document)
+
+    assert channel.fetch_calls == [8001]
+    assert channel.message.edit.await_count == 1
+
+    channel.message.edit = original_edit
+    clock[0] = 220.5
+    await cog.sync_document(document)
+
+    assert channel.fetch_calls == [8001, 8001]
+    assert channel.message.content == "# 最新核准版本\n"
+    assert len(channel.message.edits) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_after", [None, "invalid", "nan", "inf", "-1", "0"])
+async def test_terminal_429_without_valid_retry_after_uses_conservative_cooldown(monkeypatch, retry_after):
+    cog, _, channel, document = _sync_cog(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr("bot.cogs.resource_library.monotonic", lambda: clock[0])
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    error = discord.HTTPException(
+        SimpleNamespace(status=429, reason="Too Many Requests", headers=headers), "rate limited"
+    )
+    original_edit = channel.message.edit
+    channel.message.edit = AsyncMock(side_effect=error)
+
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    clock[0] = 159.9
+    with pytest.raises(ValueError, match="退避"):
+        await cog.sync_document(document)
+    assert channel.fetch_calls == [8001]
+
+    channel.message.edit = original_edit
+    clock[0] = 160.0
+    await cog.sync_document(document)
+    assert channel.fetch_calls == [8001, 8001]
+
+
+@pytest.mark.asyncio
+async def test_non_429_failure_does_not_activate_cooldown(monkeypatch):
+    cog, _, channel, document = _sync_cog(monkeypatch)
+    error = discord.HTTPException(SimpleNamespace(status=500, reason="Server Error", headers={}), "failed")
+    original_edit = channel.message.edit
+    channel.message.edit = AsyncMock(side_effect=error)
+
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    channel.message.edit = original_edit
+    await cog.sync_document(document)
+
+    assert channel.fetch_calls == [8001, 8001]
+    assert len(channel.message.edits) == 1
 
 
 class FakeApiRequest:
@@ -330,6 +641,64 @@ async def _api_cog(tmp_path, monkeypatch, *, legacy=False):
 
     monkeypatch.setattr(cog, "_authenticate_member", authenticate_member)
     return cog, repository, guild, member
+
+
+@pytest.mark.asyncio
+async def test_manual_sync_reports_cooldown_without_claiming_success(tmp_path, monkeypatch):
+    cog, _, guild, _ = await _api_cog(tmp_path, monkeypatch)
+    monkeypatch.setattr("bot.cogs.resource_library.monotonic", lambda: 100.0)
+    cog._sync_not_before[(guild.id, RESOURCE_DOCUMENTS[0][0])] = 160.0
+    interaction = SimpleNamespace(
+        guild=guild,
+        guild_id=guild.id,
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    await ResourceLibraryCog.resource_sync.callback(cog, interaction)
+
+    interaction.followup.send.assert_awaited_once()
+    assert "同步失敗" in interaction.followup.send.await_args.args[0]
+    assert "退避" in interaction.followup.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cooldown", "http"])
+async def test_approval_failure_is_saved_but_never_labeled_published(failure, tmp_path, monkeypatch):
+    cog, repository, guild, _ = await _api_cog(tmp_path, monkeypatch)
+    draft = await repository.create_draft("tools", 77, 1, "# 最新核准版本\n")
+    await repository.set_review_thread(draft["id"], 4001, 4002)
+    guild.fetch_member = AsyncMock(return_value=SimpleNamespace(
+        id=88, guild_permissions=SimpleNamespace(administrator=False, manage_guild=True)
+    ))
+    if failure == "cooldown":
+        monkeypatch.setattr("bot.cogs.resource_library.monotonic", lambda: 100.0)
+        cog._sync_not_before[(guild.id, "tools")] = 160.0
+    else:
+        cog.sync_document = AsyncMock(side_effect=discord.HTTPException(
+            SimpleNamespace(status=429, reason="Too Many Requests", headers={}), "rate limited"
+        ))
+    message = FakeMessage(4002, author_id=999)
+    interaction = SimpleNamespace(
+        guild=guild,
+        guild_id=guild.id,
+        channel=SimpleNamespace(),
+        channel_id=4001,
+        message=message,
+        user=SimpleNamespace(id=88),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    await cog.resolve_review(interaction, approve=True)
+
+    assert (await repository.get_draft(draft["id"]))["status"] == "approved"
+    document = await repository.get_document("tools")
+    assert document["version"] == 2
+    assert document["content_md"] == "# 最新核准版本\n"
+    assert "已同意但尚未發布" in message.edits[0]["embed"].description
+    assert "已同意並發布" not in message.edits[0]["embed"].description
+    assert "正式訊息同步失敗" in interaction.followup.send.await_args.args[0]
 
 
 @pytest.mark.asyncio
