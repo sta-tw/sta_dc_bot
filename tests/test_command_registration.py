@@ -8,8 +8,9 @@ import pytest
 from discord import app_commands
 from discord.ext import commands
 
-from bot import _sync_global_commands, _sync_global_resource_setup_command
+from bot import _GLOBAL_FALLBACK_COMMANDS, _sync_global_commands, _sync_global_resource_setup_command
 from bot.cogs.ai_chat import AiChat
+from bot.cogs.king_of_nonsense import KingOfNonsense
 from bot.cogs.resource_library import ResourceLibraryCog
 
 
@@ -44,6 +45,7 @@ def _make_bot() -> commands.Bot:
         )
     )
     bot.tree.add_command(AiChat.llm_channel)
+    bot.tree.add_command(KingOfNonsense.leaderboard)
     return bot
 
 
@@ -223,6 +225,58 @@ async def test_global_50240_fallback_syncs_llm_channel_without_bulk_replacement(
         llm_channel_payload,
     )
     bot.http.edit_global_command.assert_not_awaited()
+    bot.http.bulk_upsert_global_commands.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leaderboard_present", [False, True])
+async def test_global_50240_fallback_syncs_leaderboard_without_bulk_replacement(leaderboard_present):
+    bot = _make_bot()
+    llm_channel = bot.tree.get_command("llm_channel")
+    leaderboard = bot.tree.get_command("最佳幹話王")
+    assert llm_channel is not None
+    assert leaderboard is not None
+    remote_llm_channel = llm_channel.to_dict(bot.tree)
+    remote_llm_channel.update({"id": 3003, "application_id": APPLICATION_ID})
+    bot.http.get_global_commands.return_value = [
+        _remote_command(bot, 3001),
+        _remote_command(bot, 3002, name="another_command"),
+        remote_llm_channel,
+        _entry_point_command(),
+    ]
+    leaderboard_payload = leaderboard.to_dict(bot.tree)
+    if leaderboard_present:
+        remote_leaderboard = deepcopy(leaderboard_payload)
+        remote_leaderboard.update({
+            "id": 3004,
+            "application_id": APPLICATION_ID,
+            "description": "Old leaderboard description",
+        })
+        bot.http.get_global_commands.return_value.append(remote_leaderboard)
+
+    statuses = await _sync_global_commands(bot, _GLOBAL_FALLBACK_COMMANDS)
+
+    assert statuses == {
+        "resource_setup": "already matches",
+        "llm_channel": "already matches",
+        "最佳幹話王": "updated" if leaderboard_present else "created",
+    }
+    if leaderboard_present:
+        bot.http.edit_global_command.assert_awaited_once_with(
+            APPLICATION_ID,
+            3004,
+            {
+                "description": leaderboard_payload["description"],
+                "options": leaderboard_payload.get("options", []),
+            },
+        )
+        bot.http.upsert_global_command.assert_not_awaited()
+    else:
+        bot.http.upsert_global_command.assert_awaited_once_with(
+            APPLICATION_ID,
+            leaderboard_payload,
+        )
+        bot.http.edit_global_command.assert_not_awaited()
     bot.http.bulk_upsert_global_commands.assert_not_awaited()
 
 

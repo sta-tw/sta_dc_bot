@@ -14,6 +14,9 @@ from .utils.config_paths import ConfigPaths
 from .utils.logging_config import setup_logging
 
 
+_GLOBAL_FALLBACK_COMMANDS = ("resource_setup", "llm_channel", "最佳幹話王")
+
+
 def build_bot(settings_path: Path | str) -> commands.Bot:
     setup_logging()
 
@@ -96,7 +99,7 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
                 try:
                     sync_statuses = await _sync_global_commands(
                         bot,
-                        ("resource_setup", "llm_channel"),
+                        _GLOBAL_FALLBACK_COMMANDS,
                     )
                 except Exception:
                     bot.logger.exception(
@@ -106,11 +109,10 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
                     raise
                 bot.logger.warning(
                     "Discord rejected global bulk command sync with code 50240; "
-                    "targeted /resource_setup status=%s and /llm_channel status=%s. "
+                    "targeted command sync statuses=%s. "
                     "No other remote commands, including the Activity Entry Point, "
                     "were modified: %s",
-                    sync_statuses.get("resource_setup", "not attempted"),
-                    sync_statuses.get("llm_channel", "not attempted"),
+                    sync_statuses,
                     exc,
                 )
 
