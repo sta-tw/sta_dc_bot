@@ -2441,6 +2441,5 @@ async def test_cancelled_scheduler_turn_retrieves_handler_errors_without_raw_tra
             await caller
     await asyncio.wait_for(worker, timeout=1)
     assert handler_task.done() and not handler_task.cancelled()
-    # Unretrieved task errors let asyncio emit the original exception body.
     assert not handler_task._log_traceback
     assert scheduler._pending == 0

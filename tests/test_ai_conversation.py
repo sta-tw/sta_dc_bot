@@ -83,8 +83,6 @@ class FakeChannel:
                     continue
                 yield self.messages[message_id]
 
-        # The manager stops after the requested count; keep the fake generator
-        # itself unbounded so repeated pages exercise cursor handling.
         return iterator()
 
 
@@ -167,8 +165,6 @@ def test_older_reply_ancestor_survives_history_far_beyond_nearby_window():
     for message_id in range(3, 30):
         make_message(channel, message_id, content=f"其他內容 {message_id}")
     trigger = make_message(channel, 30, content="問題", reply_to=2)
-    # Resolved is omitted so both ancestors must be fetched even though only a
-    # small history window is available.
     trigger.reference = FakeReference(2, channel.id, channel.guild.id)
     manager = ConversationManager(history_page_size=3, max_api_calls=4)
 
@@ -570,7 +566,6 @@ def test_invalidation_during_fetch_fails_closed_and_never_publishes_stale_data()
 
     assert context.records == ()
     assert not context._valid_at_collect
-    # The returned object cannot be used to publish a summary after invalidation.
     channel = FakeChannel()
     manager = ConversationManager()
     assert context.revision != 0

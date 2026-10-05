@@ -222,7 +222,6 @@ class ConversationManager:
                 pass
         message_id = cls._value_id(message, "id")
         if message_id is not None and message_id > (1 << 22):
-            # Discord snowflakes encode creation time in their upper bits.
             return ((message_id >> 22) + 1420070400000) / 1000.0
         return None
 
@@ -302,8 +301,6 @@ class ConversationManager:
             self._sessions.move_to_end(scope)
             return existing
 
-        # Channel-level invalidations are kept under the parentless scope. A
-        # thread can inherit only the guard metadata, never its messages.
         parentless = ConversationScope(scope.guild_id, scope.channel_id, None)
         guard = self._sessions.get(parentless) if scope.parent_channel_id is not None else None
         session = _Session(
@@ -402,8 +399,6 @@ class ConversationManager:
             if session.records:
                 session.records.popitem(last=False)
                 continue
-            # A bounded overflow drops per-ID refresh metadata and blocks all
-            # embedded resolved objects until this idle session expires.
             session.refresh_ids.clear()
             session.records.clear()
             session.block_resolved_refs = True
@@ -415,8 +410,6 @@ class ConversationManager:
         session.deleted_ids[message_id] = None
         session.deleted_ids.move_to_end(message_id)
         if len(session.deleted_ids) > self.max_records:
-            # A boolean fail-closed guard bounds tombstone metadata while
-            # ensuring no deleted ID can re-enter from cache, history, or refs.
             session.records.clear()
             session.refresh_ids.clear()
             session.deleted_ids.clear()
@@ -665,7 +658,6 @@ class ConversationManager:
         ancestor_ids = {record.message_id for record in ancestor_direct_first}
         descendant_ids: set[int] = set()
         related = set(ancestor_ids)
-        # Include complete observed reply branches below the reply ancestors.
         changed = True
         while changed:
             changed = False
@@ -701,8 +693,6 @@ class ConversationManager:
                 cost = self._record_tokens(candidate)
                 selected[record.message_id] = candidate
                 remaining -= cost
-            # If ancestors themselves exhaust the token budget, lower priority
-            # branches and nearby messages correctly remain absent.
             if remaining <= 0:
                 break
         return tuple(sorted(selected.values(), key=self._sort_key))
@@ -718,7 +708,6 @@ class ConversationManager:
         """Collect reply ancestors, related branches, then nearby channel history."""
         scope = self._message_scope(message)
         if scope is None:
-            # DMs and malformed partial messages are deliberately not collected.
             empty_scope = ConversationScope(0, 0, None)
             return ScopedConversation(
                 empty_scope,
@@ -827,7 +816,6 @@ class ConversationManager:
         if session.block_all_records:
             return self._scope_context(session, latest_id=trigger_id)
 
-        # Walk the explicit reply chain before spending calls on general history.
         reference = self._message_reference(message)
         next_id, _, reference_matches = self._reference_target(reference, scope)
         if not reference_matches and next_id is not None:
@@ -863,8 +851,6 @@ class ConversationManager:
             if not found or (next_id is not None and next_id in visited):
                 break
 
-        # Page backwards through this exact channel/thread. Every page is a
-        # separate bounded API call; duplicate/non-advancing mocks stop safely.
         cached_records = list(session.records.values())
         before: Any = message
         scanned_history_ids: set[int] = set()
@@ -937,8 +923,6 @@ class ConversationManager:
                 coverage_tokens = self._approximate_tokens(
                     [*ancestor_direct_first, *cached_context, *observed.values()]
                 )
-                # Always inspect one useful nearby page unless reply ancestors
-                # already consume the budget; later pages stop when coverage is full.
                 if coverage_tokens >= budget:
                     break
             if len(page) < page_limit:
@@ -947,8 +931,6 @@ class ConversationManager:
         if not await still_allowed():
             return self._scope_context(session, missing_ids=missing, latest_id=trigger_id, valid=False)
 
-        # Merge only same-scope, pre-trigger cache records. Network results win
-        # over cached copies, which may have been invalidated or edited.
         records_by_id: dict[int, ConversationRecord] = {}
         for record in cached_records:
             if (
@@ -960,8 +942,6 @@ class ConversationManager:
                 records_by_id[record.message_id] = record
         records_by_id.update(observed)
 
-        # Ancestors can be old and absent from recent history; retain them even
-        # when not in the page scan, but only after the same-scope checks above.
         for record in ancestor_direct_first:
             records_by_id[record.message_id] = record
 
@@ -969,8 +949,6 @@ class ConversationManager:
         if not await still_allowed():
             return self._scope_context(session, missing_ids=missing, latest_id=trigger_id, valid=False)
 
-        # Commit this snapshot to the bounded cache only after the epoch check;
-        # a concurrent delete/edit therefore cannot be republished by this task.
         if not session.block_all_records:
             for record in observed.values():
                 if record.message_id not in session.deleted_ids:

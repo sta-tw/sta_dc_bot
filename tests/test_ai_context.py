@@ -89,7 +89,7 @@ def test_safe_reduction_protects_policy_and_explicit_latest_question():
     assert any(row["message_id"] == 2 for row in reduced.records)
     assert all("先前說可以" in row["content"] and "後來決定不可以" in row["content"] for row in reduced.records)
     assert reduced.omitted_ids and set(reduced.omitted_ids).issubset(range(1, 21))
-    assert envelope.records == records  # No mutation of the original snapshot.
+    assert envelope.records == records
 
 
 def test_budget_rejects_essential_overflow_instead_of_one_token_output():

@@ -377,7 +377,6 @@ async def test_every_failure_prevents_draft_publication_and_memory(chat_factory,
         setattr(provider, failure, True)
     message = make_message(channel)
     await chat.on_message(message)
-    # Outage may send a typed static status, never the draft.
     for call in message.reply.await_args_list:
         assert call.args[0] != provider.drafts[0]
     if failure != "review_error":
@@ -474,7 +473,7 @@ async def test_permissions_disable_edits_and_duplicate_events_fail_closed(chat_f
     chat.bot.settings.llm_disabled_channel_ids.clear()
     provider.before_review = None
     await chat.on_message(message)
-    message.reply.assert_not_awaited()  # Same ID is never republished.
+    message.reply.assert_not_awaited()
     next_message = make_message(channel, 110)
     channel.view = False
     before = len(provider.calls)
@@ -565,7 +564,7 @@ async def test_output_review_failure_prevents_listener_send_and_save(chat_factor
     assert entered == [True]
     assert [stage for stage, _, _ in provider.calls[:2]] == ["draft", "review"]
     if failure == "output_review_error":
-        assert message.reply.await_count == 1  # A static service notice, not a candidate.
+        assert message.reply.await_count == 1
         assert message.reply.await_args.args[0] != (draft or "無回答")
     else:
         message.reply.assert_not_awaited()
@@ -693,7 +692,7 @@ async def test_late_output_reply_never_publishes_after_cancel_or_deadline(chat_f
                 await caller
         else:
             await asyncio.wait_for(caller, timeout=1)
-        assert chat.llm_pool._slots._value == 1  # The actual synchronous output call still owns its slot.
+        assert chat.llm_pool._slots._value == 1
         assert not chat.memory_collection.added
         before = message.reply.await_count
         for call in message.reply.await_args_list:
@@ -733,7 +732,7 @@ async def test_mentioned_message_keeps_thinking_reaction_until_both_reviews_and_
     message.add_reaction.assert_awaited_once_with("🤔")
     message.remove_reaction.assert_awaited_once_with("🤔", chat.bot.user)
     assert message.reaction_events == ["add", "reply", "remove"]
-    assert message.reaction_users["🤔"] == {11, 22}  # Other members' reactions stay intact.
+    assert message.reaction_users["🤔"] == {11, 22}
     assert len(chat.memory_collection.added) == 1
     assert not chat._reaction_cleanups
 
@@ -915,7 +914,7 @@ async def test_duplicate_and_queued_mentions_do_not_touch_an_active_reaction(cha
         first.remove_reaction.assert_not_awaited()
         second_task = asyncio.create_task(chat.on_message(second))
         await wait_until(lambda: chat.scheduler._pending == 2)
-        second.add_reaction.assert_not_awaited()  # The queued turn has not started thinking yet.
+        second.add_reaction.assert_not_awaited()
         release.set()
         await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=1)
         for message in (first, second):
@@ -1252,7 +1251,6 @@ async def test_scheduler_timeout_does_not_publish_after_a_reply_attempt(chat_fac
         await memory_loader()
         return PipelineResult("approved", approved=approved)
 
-    # This test targets post-publication waits, not executor/model latency.
     chat.pipeline.run = AsyncMock(side_effect=ready_pipeline)
     chat.memory_enabled = blocked_stage == "memory_save"
     if blocked_stage == "memory_save":

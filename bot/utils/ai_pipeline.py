@@ -199,7 +199,7 @@ class LLMWorkerPool:
         def finished(done: asyncio.Task[Any]) -> None:
             self._workers.discard(done)
             if not done.cancelled():
-                done.exception()  # Retrieve failures even after the caller has timed out.
+                done.exception()
 
         task.add_done_callback(finished)
         return await asyncio.wait_for(asyncio.shield(task), timeout=budget.remaining())
@@ -885,7 +885,7 @@ class ChannelScheduler:
                                 )
                         elif job.cancelled:
                             if not job.task.cancelled():
-                                job.task.exception()  # Retrieve failures without logging cancelled-turn content.
+                                job.task.exception()
                             result = PipelineResult("cancelled")
                         else:
                             try:
@@ -945,4 +945,3 @@ class ChannelScheduler:
     def close(self) -> None:
         for key in list(self._queues):
             self.invalidate(key)
-        # Do not cancel the LLM pool's actual synchronous workers.

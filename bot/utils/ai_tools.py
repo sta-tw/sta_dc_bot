@@ -255,7 +255,6 @@ class ReadonlyToolRegistry:
         except asyncio.TimeoutError:
             return ToolResult("timeout", detail="Tool execution exceeded its time limit.")
         except Exception:
-            # Do not expose exception messages, which can include credentials or source data.
             return ToolResult("error", detail="Tool execution failed.")
 
     @staticmethod
@@ -462,8 +461,6 @@ class ReadonlyToolRegistry:
         status, hits, detail = self._unpack_rag_result(raw_result)
         if status != "ok":
             return self._status_result(status, detail)
-        # Defense in depth: reject cross-document or cross-kind metadata even if a store
-        # implementation returns rows that do not respect its requested Chroma filter.
         scoped_hits = [
             hit
             for hit in hits

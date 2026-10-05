@@ -92,8 +92,6 @@ class AiChat(commands.Cog):
         self.rate_limit_message_template = (os.getenv("VLLM_RATE_LIMIT_MESSAGE") or "").strip()
         self.unavailable_message_template = (os.getenv("VLLM_UNAVAILABLE_MESSAGE") or "").strip()
 
-        # Legacy text knobs remain usable by the rendered template. Context
-        # selection itself is now reply-graph and token-budget based, not last-N.
         self.context_limit = _env_int("VLLM_CONTEXT_MESSAGES", 8, 1)
         self.context_max_chars = _env_int("VLLM_CONTEXT_MAX_CHARS", 5000, 500)
         self.memory_max_chars = _env_int("VLLM_MEMORY_MAX_CHARS", 3000, 500)
@@ -368,8 +366,6 @@ class AiChat(commands.Cog):
         return self._compat_budget().estimate(messages)
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # Compatibility callers must supply separately delimited source data.
-        # Never guess which untrusted marker denotes the real latest question.
         self._compat_budget().allocate(messages)
         return messages
 
@@ -488,7 +484,6 @@ class AiChat(commands.Cog):
             return await self._process_turn(message, scope, question, mentioned, publication)
         finally:
             if cleanup:
-                # Remove only our own reaction, even if the turn is cancelled.
                 task = asyncio.create_task(self._clear_thinking_reaction(message))
                 self._reaction_cleanups.add(task)
                 task.add_done_callback(self._reaction_cleanups.discard)
@@ -542,8 +537,6 @@ class AiChat(commands.Cog):
         if result.approved is not None:
             approved = result.approved
             budget.remaining()
-            # Claim before awaiting Discord: a cancelled await may already have
-            # published an answer even when its acknowledgement never arrives.
             if not publication.claim():
                 return result
             self._log_turn(message, "answer", "started")
@@ -715,8 +708,6 @@ class AiChat(commands.Cog):
             question = re.sub(rf"<@!?{bot_id}>", "", raw_text).strip() or self.empty_user_text
             key = (scope.guild_id, scope.channel_id)
             self._known_scopes[key] = scope.parent_channel_id
-            # Bound scope metadata just like the session cache; never keep a guild's
-            # entire channel directory as a side effect of ordinary messages.
             if len(self._known_scopes) > self.conversations.max_sessions:
                 oldest = next(iter(self._known_scopes))
                 self._known_scopes.pop(oldest, None)
@@ -728,8 +719,6 @@ class AiChat(commands.Cog):
             if mentioned:
                 stage = "scheduler" if result.outcome in {"scheduler_timeout", "cancelled", "stale", "duplicate", "busy"} else "turn"
                 self._log_turn(message, stage, result.outcome)
-            # Only these results belong to the scheduler. Pipeline notices have
-            # already been handled by the turn, and must never be forwarded again.
             if mentioned and result.outcome in {"busy", "scheduler_timeout"} and result.notice is not None:
                 if publication.attempted:
                     self._log_turn(message, "notice", "already_attempted")

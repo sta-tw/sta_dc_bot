@@ -215,7 +215,6 @@ def test_query_result_distinguishes_no_hits_disabled_unavailable_and_errors():
     result = failing.query_result(guild_id=123, query_text="招生期限")
     assert result.status == "error"
     assert result.hits == ()
-    # The legacy list API remains compatible and does not leak storage exceptions.
     assert failing.query(guild_id=123, query_text="招生期限") == []
 
 

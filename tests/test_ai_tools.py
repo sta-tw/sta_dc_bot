@@ -146,7 +146,7 @@ def test_rag_statuses_keep_disabled_unavailable_no_hits_and_errors_distinct():
 
     assert statuses == ["no_hits", "error", "disabled", "unavailable"]
     assert no_hits.schemas and no_hits.schemas[0]["function"]["name"] == "search_admission_guides"
-    assert disabled.schemas  # Disabled RAG tools remain visible and return a typed status.
+    assert disabled.schemas
 
 
 def test_web_tool_is_independent_of_rag_and_disabled_web_remains_typed():

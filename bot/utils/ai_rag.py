@@ -57,7 +57,6 @@ _TOPIC_ALIASES = (
     ("文件", "資料", "繳件", "繳交", "備審"),
     ("日期", "時間", "期限", "截止"),
 )
-# "大學程式設計" names an exam, not a degree-program heading.
 _SECTION_HEADING = re.compile(r"學系|學程(?!式)|研究所|系所組|[（(][^（）()\n]{1,30}組[）)]")
 _SECTION_TITLE = re.compile(
     r"(?:[\w&/-]{1,60}(?:學系|學程|研究所)(?:\([^()\n]{1,30}組\))?"
@@ -105,7 +104,6 @@ def _matches_heading_context(field_groups: list[tuple[str, ...]], document: str)
         if normalized in {"班組", "系所組"} or not _SECTION_TITLE.fullmatch(normalized):
             continue
         if normalized.startswith("(") or normalized.endswith("組"):
-            # A new group replaces, rather than retains, the prior group label.
             heading = f"{heading.split('(', 1)[0]}({normalized.strip('()')})"
         else:
             heading = normalized
@@ -119,7 +117,6 @@ def _matches_entity(entity_terms: list[str], title: str, document: str, filename
         normalized_label = _normalize_search_text(label)
         schools = re.findall(r"[㐀-鿿]+大學", normalized_label)
         if schools:
-            # The short alias "交通大學" must not match Shanghai/Xi'an universities.
             return any(
                 school == term
                 or school.endswith(f"國立{term}")
@@ -346,8 +343,6 @@ class AdmissionGuideStore:
         scored: list[tuple[tuple[Any, ...], RagHit]] = []
         for hit, normalized_document, fields, key in rows:
             if field_groups and not all(fields):
-                # A headerless continuation can inherit only from the immediately
-                # preceding, unambiguous heading in this guild/document/page.
                 if key is None or len(by_chunk[key]) != 1 or _SECTION_HEADING.search(hit.text):
                     continue
                 previous = by_chunk.get((key[0], key[1], key[2] - 1), [])
@@ -381,7 +376,6 @@ class AdmissionGuideStore:
                     numbers.append(int(hit.metadata.get(name, 0)))
                 except (TypeError, ValueError):
                     numbers.append(0)
-            # Topics and field coverage outrank repetitions of a school name.
             rank = (
                 -topic_matches,
                 -exact_topics,

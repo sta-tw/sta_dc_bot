@@ -229,7 +229,6 @@ def reduce_envelope(
         return current
     validate_tool_pairs(current.exchanges)
     current.reduced = True
-    # Completed exchanges become source-bearing evidence and explicit statuses.
     for message in current.exchanges:
         if message.get("role") != "tool":
             continue
@@ -246,7 +245,6 @@ def reduce_envelope(
     if fits():
         return current
 
-    # Excerpts preserve both ends, speaker attribution, IDs and explicit coverage.
     for limit in (640, 320, 160):
         current.memory = [source_excerpt(line, limit) for line in current.memory]
         for record in current.records:
@@ -262,8 +260,6 @@ def reduce_envelope(
         if fits():
             return current
 
-    # Drop least relevant neighbors before more distant reply ancestors. Do not
-    # let a generated summary outlive the original snippets it purports to cover.
     priority = {message_id: index for index, message_id in enumerate(current.branch_ids)}
     while current.records:
         candidates = list(enumerate(current.records))
@@ -284,8 +280,6 @@ def reduce_envelope(
         current.memory.pop()
         if fits():
             return current
-    # Evidence may be omitted, never fabricated or reduced to a self-certifying
-    # model summary. The reviewer must then choose uncertainty or rejection.
     while current.evidence:
         current.evidence.pop()
         if fits():
