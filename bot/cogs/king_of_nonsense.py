@@ -201,6 +201,27 @@ class KingOfNonsense(commands.Cog):
                 return
             await db.increment_message_count(message.author.id)
 
+    async def _prepare_history_seed(
+        self,
+        guild: discord.Guild,
+        db: DatabaseManager,
+    ) -> None:
+        async with self._get_lock(self._write_locks, guild.id):
+            if guild.id in self._seed_tokens:
+                return
+            snapshot_path = ConfigPaths.DATA_DIR / "leaderboard_preloads" / f"{guild.id}.json"
+            snapshot = None
+            if snapshot_path.exists():
+                snapshot = await asyncio.to_thread(load_snapshot, snapshot_path, guild.id)
+            token = uuid4().hex
+            cutoff_id = next_boundary_id()
+            if await db.begin_message_history_seed(
+                token, cutoff_id, allow_legacy_reseed=snapshot is not None
+            ):
+                self._history_cutoffs[guild.id] = cutoff_id
+                self._seed_tokens[guild.id] = token
+                self._snapshots[guild.id] = snapshot
+
     async def _ensure_history_seeded(
         self,
         guild: discord.Guild,
