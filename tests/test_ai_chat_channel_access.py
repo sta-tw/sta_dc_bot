@@ -6,6 +6,8 @@ import pytest
 
 from bot.cogs.ai_chat import AiChat
 from bot.utils.config import Settings, save_llm_disabled_channel_ids
+from bot.utils.ai_conversation import ConversationManager, ConversationScope
+from bot.utils.ai_pipeline import NoticeKind, PipelineResult, ServiceNotice
 
 
 def _write_bot_config(path, llm_settings):
@@ -56,13 +58,7 @@ def test_save_llm_disabled_channels_preserves_other_settings(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    (
-        "disabled_channel_ids",
-        "channel_id",
-        "parent_channel_id",
-        "mentioned",
-        "expected_memory_calls",
-    ),
+    ("disabled_channel_ids", "channel_id", "parent_channel_id", "mentioned", "expected_turns"),
     [
         ([123], 123, None, False, 0),
         ([123], 456, 123, False, 0),
@@ -75,22 +71,26 @@ async def test_on_message_skips_disabled_channels_before_llm_and_memory(
     channel_id,
     parent_channel_id,
     mentioned,
-    expected_memory_calls,
+    expected_turns,
 ):
     chat = AiChat.__new__(AiChat)
     bot_user = SimpleNamespace(id=999)
     chat.bot = SimpleNamespace(
         user=bot_user,
         settings=SimpleNamespace(llm_disabled_channel_ids=disabled_channel_ids),
-        logger=SimpleNamespace(exception=Mock()),
+        logger=SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock()),
     )
     chat.client = object()
-    chat._save_message_memory = Mock()
-    chat._collect_context_records = AsyncMock()
-    chat._is_identity_question = Mock(return_value=False)
-    chat._rate_limited_until = 0
+    chat._save_memory = Mock()
+    chat.mention_only = False
+    chat.empty_user_text = "請補充問題"
+    chat.conversations = ConversationManager(max_sessions=100)
+    chat.scheduler = SimpleNamespace(submit=AsyncMock(return_value=PipelineResult("completed")))
+    chat._known_scopes = {}
     guild = SimpleNamespace(id=1, me=bot_user)
     message = SimpleNamespace(
+        id=100,
+        attachments=[],
         guild=guild,
         author=SimpleNamespace(id=2, name="member", bot=False),
         channel=SimpleNamespace(
@@ -107,8 +107,8 @@ async def test_on_message_skips_disabled_channels_before_llm_and_memory(
 
     await chat.on_message(message)
 
-    assert chat._save_message_memory.call_count == expected_memory_calls
-    assert chat._collect_context_records.await_count == 0
+    chat._save_memory.assert_not_called()
+    assert chat.scheduler.submit.await_count == expected_turns
 
 
 def _make_channel_interaction(*, manage_guild=True, roles=(), channel_guild_id=1):
@@ -199,3 +199,122 @@ async def test_llm_channel_command_rejects_channels_from_other_guilds(tmp_path):
 
     assert chat.bot.settings.llm_disabled_channel_ids == []
     assert "必須屬於目前的伺服器" in interaction.response.send_message.await_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", [
+    "on_raw_thread_update", "on_raw_thread_delete", "on_raw_thread_member_remove",
+])
+async def test_uncached_thread_events_invalidate_only_the_affected_scope(event):
+    chat = AiChat.__new__(AiChat)
+    chat.conversations = SimpleNamespace(invalidate_channel=Mock())
+    chat.scheduler = SimpleNamespace(invalidate=Mock())
+    chat._known_scopes = {(1, 7): None, (1, 8): 7, (1, 9): None, (2, 7): None}
+    payload = SimpleNamespace(guild_id=1, thread_id=7)
+
+    await getattr(chat, event)(payload)
+
+    chat.conversations.invalidate_channel.assert_called_once_with(1, 7, include_children=True)
+    assert [call.args[0] for call in chat.scheduler.invalidate.call_args_list] == [(1, 7), (1, 8)]
+    assert chat._known_scopes == {(1, 9): None, (2, 7): None}
+
+
+def test_scope_invalidation_cancels_jobs_even_without_scope_metadata():
+    chat = AiChat.__new__(AiChat)
+    chat.conversations = SimpleNamespace(invalidate_channel=Mock())
+    chat.scheduler = SimpleNamespace(invalidate=Mock())
+    chat._known_scopes = {}
+
+    chat._invalidate_channel(1, 7)
+
+    chat.conversations.invalidate_channel.assert_called_once_with(1, 7, include_children=True)
+    chat.scheduler.invalidate.assert_called_once_with((1, 7))
+
+
+def _scheduler_notice_chat():
+    chat = AiChat.__new__(AiChat)
+    bot_user = SimpleNamespace(id=999)
+    guild = SimpleNamespace(id=1, me=bot_user)
+    channel = SimpleNamespace(id=10, parent_id=None, guild=guild, view=True,
+                              history=AsyncMock(), fetch_message=AsyncMock())
+    channel.permissions_for = lambda member: SimpleNamespace(
+        view_channel=channel.view, read_message_history=True,
+        send_messages=True, send_messages_in_threads=True)
+    message = SimpleNamespace(id=100, guild=guild, channel=channel, author=SimpleNamespace(id=2, bot=False),
+                              content="<@999> QUESTION_GUARD_CANARY", attachments=[], mentions=[bot_user],
+                              role_mentions=[], mention_everyone=False, webhook_id=None, reply=AsyncMock())
+    chat.bot = SimpleNamespace(user=bot_user, settings=SimpleNamespace(llm_disabled_channel_ids=[]),
+                               logger=SimpleNamespace(info=Mock(), warning=Mock(), exception=Mock()))
+    chat.client = object()
+    chat.mention_only = False
+    chat.empty_user_text = "請補充問題"
+    chat._known_scopes = {}
+    chat.conversations = ConversationManager(max_sessions=2)
+    chat._save_memory = Mock()
+    return chat, message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["busy", "scheduler_timeout"])
+@pytest.mark.parametrize("mentioned", [False, True])
+@pytest.mark.parametrize("change", ["none", "edit", "delete", "disabled", "permissions", "ttl", "eviction"])
+async def test_scheduler_notices_recheck_source_guard_and_permissions_without_fetch(outcome, mentioned, change):
+    chat, message = _scheduler_notice_chat()
+    if not mentioned:
+        message.mentions = []
+    captured = []
+    original_capture = chat.conversations.capture_guard
+
+    def capture(scope):
+        snapshot = original_capture(scope)
+        captured.append(snapshot)
+        return snapshot
+
+    chat.conversations.capture_guard = Mock(side_effect=capture)
+    kind = NoticeKind.BUSY if outcome == "busy" else NoticeKind.UNAVAILABLE
+
+    async def submit(key, message_id, handler):
+        assert len(captured) == int(mentioned)
+        if captured:
+            assert captured[0].records == () and captured[0].missing_ids == ()
+            assert captured[0].latest_id is None
+        if change in {"edit", "delete"}:
+            chat.conversations.invalidate_message(1, 10, message_id, deleted=change == "delete")
+        elif change == "disabled":
+            chat.bot.settings.llm_disabled_channel_ids.append(10)
+            chat.conversations.invalidate_channel(1, 10)
+        elif change == "permissions":
+            message.channel.view = False
+        elif change == "ttl":
+            for session in chat.conversations._sessions.values():
+                session.last_access -= chat.conversations.ttl_seconds + 1
+        elif change == "eviction":
+            chat.conversations.max_sessions = 1
+            original_capture(ConversationScope(1, 20))
+            original_capture(ConversationScope(1, 10))
+        return PipelineResult(outcome, notice=ServiceNotice(kind))
+
+    chat.scheduler = SimpleNamespace(submit=AsyncMock(side_effect=submit))
+    await chat.on_message(message)
+    assert message.reply.await_count == int(mentioned and change == "none")
+    if message.reply.await_count:
+        assert message.reply.await_args.args[0] == ServiceNotice(kind).render()
+        assert message.reply.await_args.kwargs["mention_author"] is False
+        mentions = message.reply.await_args.kwargs["allowed_mentions"]
+        assert not mentions.everyone and not mentions.roles and not mentions.users and not mentions.replied_user
+    message.channel.history.assert_not_called()
+    message.channel.fetch_message.assert_not_called()
+    chat._save_memory.assert_not_called()
+    assert all(not session.records for session in chat.conversations._sessions.values())
+    chat.bot.logger.exception.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["unavailable", "rate_limited", "too_long", "completed", "rejected", "duplicate", "stale", "cancelled"])
+async def test_listener_does_not_forward_pipeline_or_nonpublication_notices(outcome):
+    chat, message = _scheduler_notice_chat()
+    chat.scheduler = SimpleNamespace(submit=AsyncMock(return_value=PipelineResult(
+        outcome, notice=ServiceNotice(NoticeKind.UNAVAILABLE))))
+    await chat.on_message(message)
+    message.reply.assert_not_awaited()
+    chat._save_memory.assert_not_called()

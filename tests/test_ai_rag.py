@@ -146,3 +146,95 @@ def test_lexical_query_does_not_boost_nycu_for_unrelated_text():
     )
 
     assert hits == []
+
+
+class EmptyCollection:
+    def get(self, **kwargs):
+        return {"documents": [], "metadatas": []}
+
+
+class FailingCollection:
+    def get(self, **kwargs):
+        raise RuntimeError("storage unavailable")
+
+
+class ScopedReadCollection:
+    def __init__(self):
+        self.kwargs = None
+
+    def get(self, **kwargs):
+        self.kwargs = kwargs
+        return {
+            "documents": ["valid chunk", "foreign guild", "foreign document", "wrong kind"],
+            "metadatas": [
+                {
+                    "guild_id": 123,
+                    "kind": "admission_guide",
+                    "document_id": "doc-123",
+                    "page": 1,
+                    "chunk_index": 0,
+                },
+                {
+                    "guild_id": 456,
+                    "kind": "admission_guide",
+                    "document_id": "doc-123",
+                    "page": 1,
+                    "chunk_index": 0,
+                },
+                {
+                    "guild_id": 123,
+                    "kind": "admission_guide",
+                    "document_id": "other-doc",
+                    "page": 1,
+                    "chunk_index": 0,
+                },
+                {
+                    "guild_id": 123,
+                    "kind": "other",
+                    "document_id": "doc-123",
+                    "page": 1,
+                    "chunk_index": 0,
+                },
+            ],
+        }
+
+
+def test_query_result_distinguishes_no_hits_disabled_unavailable_and_errors():
+    store = AdmissionGuideStore.__new__(AdmissionGuideStore)
+    store.collection = EmptyCollection()
+    assert store.query_result(guild_id=123, query_text="招生期限").status == "no_hits"
+    assert store.query_result(guild_id=123, query_text="招生期限", enabled=False).status == "disabled"
+
+    missing_collection = AdmissionGuideStore.__new__(AdmissionGuideStore)
+    assert missing_collection.query_result(guild_id=123, query_text="招生期限").status == "unavailable"
+
+    failing = AdmissionGuideStore.__new__(AdmissionGuideStore)
+    failing.collection = FailingCollection()
+    result = failing.query_result(guild_id=123, query_text="招生期限")
+    assert result.status == "error"
+    assert result.hits == ()
+    # The legacy list API remains compatible and does not leak storage exceptions.
+    assert failing.query(guild_id=123, query_text="招生期限") == []
+
+
+def test_read_document_is_restricted_to_same_guild_kind_and_document():
+    store = AdmissionGuideStore.__new__(AdmissionGuideStore)
+    store.collection = ScopedReadCollection()
+
+    result = store.read_document_result(
+        guild_id=123,
+        document_id="doc-123",
+        page=1,
+        chunk=0,
+        limit=3,
+    )
+
+    assert result.status == "ok"
+    assert [hit.text for hit in result.hits] == ["valid chunk"]
+    where = store.collection.kwargs["where"]["$and"]
+    assert {"guild_id": {"$eq": 123}} in where
+    assert {"kind": {"$eq": "admission_guide"}} in where
+    assert {"document_id": {"$eq": "doc-123"}} in where
+    assert {"page": {"$eq": 1}} in where
+    assert {"chunk_index": {"$eq": 0}} in where
+    assert store.collection.kwargs["limit"] == 3

@@ -15,6 +15,13 @@ class SearchResult:
     snippet: str
 
 
+@dataclass(frozen=True, slots=True)
+class SearchResponse:
+    status: str
+    results: tuple[SearchResult, ...] = ()
+    detail: str | None = None
+
+
 class SearxngSearch:
     """Small synchronous client for a SearXNG JSON endpoint."""
 
@@ -43,9 +50,15 @@ class SearxngSearch:
         self.logger = logger or logging.getLogger(__name__)
 
     def search(self, query: str) -> list[SearchResult]:
+        """Legacy list adapter; tools use search_result to distinguish failures."""
+        return list(self.search_result(query).results)
+
+    def search_result(self, query: str) -> SearchResponse:
         query = " ".join((query or "").split())[:300]
-        if not self.search_url or not query:
-            return []
+        if not self.search_url:
+            return SearchResponse("unavailable", detail="Search endpoint is not configured.")
+        if not query:
+            return SearchResponse("no_hits")
 
         params = urlencode(
             {
@@ -65,10 +78,12 @@ class SearxngSearch:
                 payload = json.loads(response.read().decode("utf-8", errors="replace"))
         except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
             self.logger.warning("SearXNG search failed: %s", exc)
-            return []
+            return SearchResponse("error", detail="Search request failed.")
 
+        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            return SearchResponse("error", detail="Invalid search response.")
         results: list[SearchResult] = []
-        for item in payload.get("results", [])[: self.max_results]:
+        for item in payload["results"][: self.max_results]:
             if not isinstance(item, dict):
                 continue
             title = " ".join(str(item.get("title") or "").split())
@@ -82,7 +97,7 @@ class SearxngSearch:
                 snippet = snippet[: self.max_snippet_chars - 1].rstrip() + "…"
             results.append(SearchResult(title=title, url=url, snippet=snippet))
 
-        return results
+        return SearchResponse("ok" if results else "no_hits", tuple(results))
 
     @staticmethod
     def format_results(results: list[SearchResult], max_chars: int = 5000) -> str:

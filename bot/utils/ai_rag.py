@@ -25,6 +25,13 @@ class RagHit:
     distance: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RagQueryResult:
+    status: str
+    hits: tuple[RagHit, ...] = ()
+    detail: str | None = None
+
+
 _QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "交大": ("陽明交通大學", "交通大學"),
     "陽明交大": ("陽明交通大學",),
@@ -267,18 +274,15 @@ class AdmissionGuideStore:
             return []
         entity_terms = _explicit_entity_terms(query_text)
         field_terms = _explicit_field_terms(query_text)
-        try:
-            result = self.collection.get(
-                where={
-                    "$and": [
-                        {"guild_id": {"$eq": int(guild_id)}},
-                        {"kind": {"$eq": "admission_guide"}},
-                    ]
-                },
-                include=["documents", "metadatas"],
-            )
-        except Exception:
-            return []
+        result = self.collection.get(
+            where={
+                "$and": [
+                    {"guild_id": {"$eq": int(guild_id)}},
+                    {"kind": {"$eq": "admission_guide"}},
+                ]
+            },
+            include=["documents", "metadatas"],
+        )
 
         documents = result.get("documents", []) or []
         metadatas = result.get("metadatas", []) or []
@@ -311,22 +315,43 @@ class AdmissionGuideStore:
             for _, _, document, metadata in scored[: max(1, int(top_k))]
         ]
 
-    def query(self, *, guild_id: int, query_text: str, top_k: int = 3) -> list[RagHit]:
-        if not query_text.strip():
-            return []
-        limit = max(1, int(top_k))
+    def query_result(
+        self,
+        *,
+        guild_id: int,
+        query_text: str,
+        top_k: int = 3,
+        enabled: bool = True,
+    ) -> RagQueryResult:
+        """Retrieve guide chunks while preserving errors separately from empty results."""
+        if not enabled:
+            return RagQueryResult("disabled", detail="RAG retrieval is disabled.")
+        if getattr(self, "collection", None) is None:
+            return RagQueryResult("unavailable", detail="RAG collection is unavailable.")
+        if not isinstance(query_text, str) or not query_text.strip():
+            return RagQueryResult("no_hits")
 
-        lexical_hits = self._lexical_query(
-            guild_id=guild_id,
-            query_text=query_text,
-            top_k=limit,
-        )
+        limit = max(1, int(top_k))
+        lexical_error: Exception | None = None
+        try:
+            lexical_hits = self._lexical_query(
+                guild_id=guild_id,
+                query_text=query_text,
+                top_k=limit,
+            )
+        except Exception as exc:
+            lexical_hits = []
+            lexical_error = exc
         if lexical_hits:
-            return lexical_hits
-        if _explicit_entity_terms(query_text):
-            return []
-        if any(ord(char) > 127 for char in query_text):
-            return []
+            return RagQueryResult("ok", tuple(lexical_hits))
+
+        if _explicit_entity_terms(query_text) or any(ord(char) > 127 for char in query_text):
+            if lexical_error is not None:
+                return RagQueryResult(
+                    "error",
+                    detail=f"Lexical retrieval failed ({type(lexical_error).__name__}).",
+                )
+            return RagQueryResult("no_hits")
 
         try:
             result = self.collection.query(
@@ -340,26 +365,154 @@ class AdmissionGuideStore:
                 },
                 include=["documents", "metadatas", "distances"],
             )
-        except Exception:
-            return []
-        documents = result.get("documents") or [[]]
-        metadatas = result.get("metadatas") or [[]]
-        distances = result.get("distances") or [[]]
-        docs = documents[0] if documents else []
-        metadata_rows = metadatas[0] if metadatas else []
-        distance_rows = distances[0] if distances else []
+        except Exception as exc:
+            return RagQueryResult(
+                "error",
+                detail=(
+                    "Lexical and vector retrieval failed."
+                    if lexical_error is not None
+                    else f"Vector retrieval failed ({type(exc).__name__})."
+                ),
+            )
 
-        vector_hits: list[RagHit] = []
-        for index, document in enumerate(docs):
-            if not isinstance(document, str) or not document.strip():
-                continue
-            metadata = metadata_rows[index] if index < len(metadata_rows) else {}
-            distance = distance_rows[index] if index < len(distance_rows) else None
-            vector_hits.append(
-                RagHit(
-                    text=document,
-                    metadata=dict(metadata or {}),
-                    distance=float(distance) if isinstance(distance, (int, float)) else None,
+        try:
+            documents = result.get("documents") or [[]]
+            metadatas = result.get("metadatas") or [[]]
+            distances = result.get("distances") or [[]]
+            docs = documents[0] if documents else []
+            metadata_rows = metadatas[0] if metadatas else []
+            distance_rows = distances[0] if distances else []
+
+            vector_hits: list[RagHit] = []
+            for index, document in enumerate(docs):
+                if not isinstance(document, str) or not document.strip():
+                    continue
+                metadata = metadata_rows[index] if index < len(metadata_rows) else {}
+                distance = distance_rows[index] if index < len(distance_rows) else None
+                vector_hits.append(
+                    RagHit(
+                        text=document,
+                        metadata=dict(metadata or {}),
+                        distance=float(distance) if isinstance(distance, (int, float)) else None,
+                    )
+                )
+        except Exception as exc:
+            return RagQueryResult(
+                "error",
+                detail=f"Vector retrieval failed ({type(exc).__name__}).",
+            )
+        if vector_hits:
+            return RagQueryResult("ok", tuple(vector_hits))
+        if lexical_error is not None:
+            return RagQueryResult(
+                "error",
+                detail=f"Lexical retrieval failed ({type(lexical_error).__name__}).",
+            )
+        return RagQueryResult("no_hits")
+
+    def query(self, *, guild_id: int, query_text: str, top_k: int = 3) -> list[RagHit]:
+        """Legacy retrieval API; callers still receive a list of hits."""
+        return list(
+            self.query_result(
+                guild_id=guild_id,
+                query_text=query_text,
+                top_k=top_k,
+            ).hits
+        )
+
+    def read_document_result(
+        self,
+        *,
+        guild_id: int,
+        document_id: str,
+        page: int | None = None,
+        chunk: int | None = None,
+        limit: int = 5,
+    ) -> RagQueryResult:
+        """Read bounded chunks from one guide, enforcing guild/kind/document scope."""
+        if getattr(self, "collection", None) is None:
+            return RagQueryResult("unavailable", detail="RAG collection is unavailable.")
+        if not isinstance(document_id, str) or not document_id:
+            return RagQueryResult("no_hits")
+        try:
+            page_number = int(page) if page is not None else None
+            chunk_number = int(chunk) if chunk is not None else None
+            result_limit = max(1, min(int(limit), 100))
+            filters: list[dict[str, Any]] = [
+                {"guild_id": {"$eq": int(guild_id)}},
+                {"kind": {"$eq": "admission_guide"}},
+                {"document_id": {"$eq": document_id}},
+            ]
+            if page_number is not None:
+                filters.append({"page": {"$eq": page_number}})
+            if chunk_number is not None:
+                filters.append({"chunk_index": {"$eq": chunk_number}})
+            result = self.collection.get(
+                where={"$and": filters},
+                include=["documents", "metadatas"],
+                limit=result_limit,
+            )
+        except Exception as exc:
+            return RagQueryResult(
+                "error",
+                detail=f"Document retrieval failed ({type(exc).__name__}).",
+            )
+
+        try:
+            documents = result.get("documents", []) or []
+            metadatas = result.get("metadatas", []) or []
+            scoped_hits: list[RagHit] = []
+            for index, document in enumerate(documents):
+                if not isinstance(document, str) or not document.strip() or index >= len(metadatas):
+                    continue
+                metadata = dict(metadatas[index] or {})
+                try:
+                    metadata_guild_id = int(metadata.get("guild_id"))
+                    metadata_page = int(metadata.get("page"))
+                    metadata_chunk = int(metadata.get("chunk_index"))
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    metadata_guild_id != int(guild_id)
+                    or metadata.get("kind") != "admission_guide"
+                    or metadata.get("document_id") != document_id
+                    or (page_number is not None and metadata_page != page_number)
+                    or (chunk_number is not None and metadata_chunk != chunk_number)
+                ):
+                    continue
+                scoped_hits.append(RagHit(text=document, metadata=metadata))
+
+            scoped_hits.sort(
+                key=lambda hit: (
+                    int(hit.metadata.get("page", 0)),
+                    int(hit.metadata.get("chunk_index", 0)),
                 )
             )
-        return vector_hits
+        except Exception as exc:
+            return RagQueryResult(
+                "error",
+                detail=f"Document retrieval failed ({type(exc).__name__}).",
+            )
+        if not scoped_hits:
+            return RagQueryResult("no_hits")
+        return RagQueryResult("ok", tuple(scoped_hits[:result_limit]))
+
+    def read_document(
+        self,
+        *,
+        guild_id: int,
+        document_id: str,
+        page: int | None = None,
+        chunk: int | None = None,
+        limit: int = 5,
+    ) -> list[RagHit]:
+        """Legacy list-returning wrapper for scoped document reads."""
+        return list(
+            self.read_document_result(
+                guild_id=guild_id,
+                document_id=document_id,
+                page=page,
+                chunk=chunk,
+                limit=limit,
+            ).hits
+        )
