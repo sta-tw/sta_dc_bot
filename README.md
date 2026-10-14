@@ -71,7 +71,7 @@ readme by claude
 既有 `VLLM_CONTEXT_MESSAGES` 保留為相容設定，不再控制新回覆鏈選取。`VLLM_MAX_REPLY_CHARS` 最多 2000 字元；舊 rate-limit／unavailable template 仍可載入，但非答案通知使用程式固定文字，不能夾帶模型答案。
 
 ### 資源彙整編輯與審核
-- `/resource_setup`：由具有「管理伺服器」權限的管理員指定五個正式資源頻道、審核頻道及通知身分組；初始化時由 Database 建立五份 Markdown 文件，Bot 在各正式頻道建立一則管理訊息。
+- `/resource_setup`：由具有「管理伺服器」權限的管理員指定五個正式資源頻道、審核頻道及通知身分組；初始化時由 Database 建立五份 Markdown 文件，Bot 在各正式頻道建立管理訊息。
 - `/resource_editor`：發布持久化的「開啟編輯器」按鈕，啟動 Discord Activity。編輯器可修改現役文件的 Markdown 原文、預覽 Markdown 及查看 Diff。
 - 提交內容會先以 `base_version` 儲存為 Draft 並建立 Review Thread；只有重新驗證後具有「管理伺服器」或「管理員」Discord 權限的人員可批准或拒絕。通知身分組只負責提醒，不代表審核權限。
 - 核准後 Database 版本遞增，再由 Bot 編輯原有正式訊息；`/resource_sync` 可將 Database 正式內容重新同步到五個頻道。人工修改的 Discord 訊息不會反向寫入 Database。
@@ -166,7 +166,9 @@ Discord SDK 由專案內的 `/activity/discord-sdk.js` 提供，避免 Discord �
 
 此模式預設停用，且設定後 Web server 必須綁定 `127.0.0.1`；不要透過反向代理、Tunnel 或 Docker 公開埠提供此測試頁。Standalone OAuth callback 和 OAuth state 僅供本機登入，與 Activity 使用的 `https://127.0.0.1` placeholder 不同。
 
-各伺服器的資源文件與 Draft 儲存在 `data/database/{guild_id}.db`。正式資源訊息會直接以 Markdown 文字呈現，每份文件必須不超過 2,000 字元。Bot 啟動時及核准後只會以 Database 內容更新五份現役文件的原有訊息；若現役訊息曾被人工修改，可由管理員執行 `/resource_sync` 還原，不會將 Discord 內容寫回 Database。已停用的「活動資訊分享」訊息不再同步。
+各伺服器的資源文件與 Draft 儲存在 `data/database/{guild_id}.db`。Activity 可編輯最多 20,000 字元的完整 Markdown；長度依 UTF-16 計算，與瀏覽器一致，部分 emoji 會計為兩個字元。核准後自動拆成每則最多 2,000 字元的 Discord 訊息，優先沿段落及換行分段，保存的文件與審核原文不會截斷或重複。超長單行／單一 Markdown 構造仍會切開，因此跨訊息的程式碼區塊等排版不保證完全相同；無法無損發布的超長純空白區段會回報驗證錯誤。
+
+Bot 啟動時及核准後以 Database 內容更新五份現役文件的原有訊息，內容變長時新增後續段、變短時刪除多餘段；任一中間段遺失會重建該段與後續段以維持閱讀順序。舊單則訊息會保留相容追蹤。人工修改不會寫回 Database，可執行 `/resource_sync` 還原。部分發布失敗時核准版本仍保存在 Database，但不會回報整份已發布；已追蹤的成功段落可供重試沿用。Discord 傳送結果未知或程序在訊息 ID 保存前中斷時，不能保證完全沒有未追蹤訊息。已停用的「活動資訊分享」訊息不再同步。
 
 ---
 

@@ -5,10 +5,15 @@ from unittest.mock import AsyncMock
 
 import discord
 import pytest
-from aiohttp import web
+from aiohttp import ClientSession, web
 
 from bot.cogs.resource_library import RESOURCE_DOCUMENTS, ResourceLibraryCog
-from bot.utils.resource_library_markdown import markdown_diff
+from bot.utils.resource_library_markdown import (
+    MAX_MARKDOWN_CHARS,
+    markdown_diff,
+    split_resource_markdown,
+    utf16_length,
+)
 from database.resource_library import ResourceRepository
 
 
@@ -17,16 +22,41 @@ class FakeRepository:
         self.document = document
         self.get_calls = []
         self.saved_message_ids = []
+        self.saved_message_lists = []
+
+    def message_ids(self):
+        message_id = self.document.get("message_id")
+        message_ids = self.document.get("message_ids", [message_id] if message_id else [])
+        if len(message_ids) <= 1 and message_ids != ([message_id] if message_id else []):
+            message_ids = [message_id] if message_id else []
+        return list(message_ids)
 
     async def get_document(self, slug):
         self.get_calls.append(slug)
         if self.document is None or self.document["slug"] != slug:
             return None
-        return dict(self.document)
+        return {**self.document, "message_ids": self.message_ids()}
 
     async def set_message_id(self, slug, message_id):
         self.saved_message_ids.append((slug, message_id))
-        self.document["message_id"] = message_id
+        self.document.update(message_id=message_id, message_ids=[message_id])
+
+    async def set_message_ids(
+        self, slug, message_ids, *, expected_channel_id, expected_version, expected_message_ids
+    ):
+        if (
+            self.document["slug"] != slug
+            or self.document["channel_id"] != expected_channel_id
+            or self.document["version"] != expected_version
+            or self.message_ids() != expected_message_ids
+        ):
+            raise ValueError("文件或正式訊息已變更")
+        previous = self.document.get("message_id")
+        first = message_ids[0] if message_ids else None
+        self.saved_message_lists.append((slug, list(message_ids)))
+        if first is not None and first != previous:
+            self.saved_message_ids.append((slug, first))
+        self.document.update(message_id=first, message_ids=list(message_ids))
 
 
 class FakeMessage:
@@ -36,8 +66,13 @@ class FakeMessage:
         self.embeds = embeds or []
         self.content = content
         self.edits = []
+        self.deletes = 0
+        self.channel = None
 
     async def edit(self, **kwargs):
+        if "content" in kwargs:
+            assert 0 < utf16_length(kwargs["content"]) <= 2000
+            assert kwargs["content"].strip()
         self.edits.append(kwargs)
         if "content" in kwargs:
             self.content = kwargs["content"]
@@ -45,24 +80,52 @@ class FakeMessage:
             self.embeds = [] if kwargs["embed"] is None else [kwargs["embed"]]
         return self
 
+    async def delete(self):
+        self.deletes += 1
+        if self.channel is None or self.id not in self.channel.messages:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown message")
+        self.channel.messages.pop(self.id)
+        if self.channel._message is self:
+            self.channel._message = None
+
 
 class FakeChannel:
     def __init__(self, guild, message=None):
         self.guild = guild
+        self.messages = {}
+        self._message = None
         self.message = message
         self.fetch_calls = []
         self.sent = []
 
+    @property
+    def message(self):
+        return self._message
+
+    @message.setter
+    def message(self, value):
+        if self._message is not None:
+            self.messages.pop(self._message.id, None)
+        self._message = value
+        if value is not None:
+            self.messages[value.id] = value
+            value.channel = self
+
     async def fetch_message(self, message_id):
         self.fetch_calls.append(message_id)
-        if self.message is None or self.message.id != message_id:
+        if message_id not in self.messages:
             raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown message")
-        return self.message
+        return self.messages[message_id]
 
     async def send(self, **kwargs):
+        assert 0 < utf16_length(kwargs["content"]) <= 2000
+        assert kwargs["content"].strip()
         self.sent.append(kwargs)
-        self.message = FakeMessage(9000 + len(self.sent), author_id=999, content=kwargs["content"])
-        return self.message
+        message = FakeMessage(9000 + len(self.sent), author_id=999, content=kwargs["content"])
+        message.channel = self
+        self.messages[message.id] = message
+        self._message = message
+        return message
 
 
 class FakeGuild:
@@ -986,7 +1049,7 @@ async def test_api_accepts_resource_urls_without_http_scheme(endpoint, tmp_path,
     [
         (" \n\t", 400),
         ("- [Unsafe](javascript:alert(1))\n", 400),
-        ("x" * 2001, 413),
+        ("x" * (MAX_MARKDOWN_CHARS + 1), 413),
     ],
 )
 async def test_api_rejects_blank_unsafe_and_over_limit_markdown(
@@ -1046,3 +1109,702 @@ async def test_review_thread_403_keeps_saved_draft_unpublished(tmp_path, monkeyp
     assert document["version"] == 1
     assert row["after_md"] == content_md
     assert row["status"] == "review_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["preview", "draft"])
+@pytest.mark.parametrize(
+    "content_md",
+    [
+        "x" * 2000, "x" * 2001, "x" * 20000, "😀" * 1001, "😀" * 10000,
+        "x" * 2000 + "\n", "x" * 1999 + "\r\n", "x" * 2000 + " " * 100,
+        "a" * 1999 + "\n" * 2001 + "b", "x\n" + " " * 2200 + "y",
+    ],
+    ids=[
+        "single-limit", "split-boundary", "document-limit", "emoji-split", "emoji-document-limit",
+        "trailing-newline", "trailing-crlf", "trailing-spaces", "long-blank-run", "short-line-before-spaces",
+    ],
+)
+async def test_api_accepts_full_documents_beyond_one_discord_message(endpoint, content_md, tmp_path, monkeypatch):
+    cog, repository, _, _ = await _api_cog(tmp_path, monkeypatch)
+    before = await repository.get_document("tools")
+    cog._create_review_thread = AsyncMock(return_value=(SimpleNamespace(id=7001), SimpleNamespace(id=7002)))
+    handler = cog._api_preview if endpoint == "preview" else cog._api_create_draft
+
+    response = await handler(FakeApiRequest("tools", {"base_version": 1, "content_md": content_md}))
+
+    payload = json.loads(response.text)
+    assert response.status == (200 if endpoint == "preview" else 201)
+    if endpoint == "preview":
+        assert payload["content_md"] == content_md
+        assert payload["diff"] == markdown_diff(before["content_md"], content_md)
+        assert payload["message_count"] == len(split_resource_markdown(content_md))
+    else:
+        draft = await repository.get_draft(payload["draft_id"])
+        assert draft["after_md"] == content_md
+        assert draft["before_md"] == before["content_md"]
+        assert draft["diff"] == markdown_diff(before["content_md"], content_md)
+        assert draft["status"] == "pending"
+    assert await repository.get_document("tools") == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["preview", "draft"])
+@pytest.mark.parametrize(
+    ("content_md", "status"),
+    [("😀" * 10001, 413), ("before\ud800after", 400), ("x" + " " * 4001, 400)],
+    ids=["over-document-limit", "invalid-unicode", "unpublishable-whitespace"],
+)
+async def test_api_rejects_over_document_unicode_limit_and_unpublishable_text(endpoint, content_md, status, tmp_path, monkeypatch):
+    cog, repository, _, _ = await _api_cog(tmp_path, monkeypatch)
+    before = await repository.get_document("tools")
+    handler = cog._api_preview if endpoint == "preview" else cog._api_create_draft
+
+    with pytest.raises(web.HTTPException) as error:
+        await handler(FakeApiRequest("tools", {"base_version": 1, "content_md": content_md}))
+
+    assert error.value.status == status
+    assert await repository.get_document("tools") == before
+
+
+@pytest.mark.asyncio
+async def test_api_config_reports_shared_document_and_message_limits(monkeypatch):
+    cog = ResourceLibraryCog(SimpleNamespace(application_id=1234))
+    monkeypatch.setenv("RESOURCE_STANDALONE_ENABLED", "0")
+    monkeypatch.setattr(cog, "_client_id", lambda: "1234")
+
+    payload = json.loads((await cog._api_config(SimpleNamespace())).text)
+
+    assert payload["max_markdown_chars"] == MAX_MARKDOWN_CHARS == 20000
+    assert payload["discord_message_chars"] == 2000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diff", ["x" * 3601, "😀" * 1801], ids=["long-ascii", "long-emoji"])
+async def test_long_review_diff_uses_exact_utf8_attachment(diff, tmp_path, monkeypatch):
+    cog, repository, _, _ = await _api_cog(tmp_path, monkeypatch)
+    monkeypatch.setattr(discord, "TextChannel", FakeChannel)
+    thread = SimpleNamespace(id=4001, send=AsyncMock(return_value=FakeMessage(4002, 999)))
+    starter = SimpleNamespace(id=4000, create_thread=AsyncMock(return_value=thread))
+    guild = SimpleNamespace(id=5001, get_role=lambda role_id: None)
+    channel = FakeChannel(guild)
+    guild.get_channel = lambda channel_id: channel
+    channel.send = AsyncMock(return_value=starter)
+    document = await repository.get_document("tools")
+    draft = {"id": "draft", "created_by": "77", "base_version": 1, "diff": diff}
+
+    await cog._create_review_thread(guild, repository, document, draft, "member")
+
+    kwargs = thread.send.await_args.kwargs
+    assert len(kwargs["files"]) == 1
+    attachment = kwargs["files"][0]
+    try:
+        assert attachment.filename == "resource-diff.diff"
+        assert attachment.fp.read().decode("utf-8") == diff
+        assert "查看附加" in kwargs["embed"].description
+        assert kwargs["allowed_mentions"].to_dict() == {"parse": []}
+    finally:
+        attachment.close()
+
+
+def _parts_content(channel, repository):
+    return "".join(channel.messages[message_id].content for message_id in repository.message_ids())
+
+
+def _http_error(status):
+    return discord.HTTPException(SimpleNamespace(status=status, reason="failure", headers={}), "failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        "A" * 2000 + "B" * 2000 + "C", "# 文件\r\n" + "- 台灣資源 😀\r\n" * 500,
+        "x" * 2000 + "\n", "x" * 1999 + "\r\n", "x" * 2000 + " " * 100,
+    ],
+    ids=["long-line", "multiline-unicode", "trailing-newline", "trailing-crlf", "trailing-spaces"],
+)
+async def test_multipart_publication_is_lossless_and_repeat_sync_is_idempotent(content, monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content=content)
+
+    first = await cog.sync_document(document)
+    ids = repository.message_ids()
+    edits = {message_id: len(message.edits) for message_id, message in channel.messages.items()}
+    await cog.sync_document(document)
+
+    assert first.id == ids[0] == 8001
+    assert len(ids) == len(split_resource_markdown(content)) > 1
+    assert len(channel.sent) == len(ids) - 1
+    assert _parts_content(channel, repository) == content
+    assert {message_id: len(message.edits) for message_id, message in channel.messages.items()} == edits
+    for message_id in ids:
+        assert cog._document_message_index[(5001, message_id)] == "tools"
+    for send in channel.sent:
+        assert send["allowed_mentions"].to_dict() == {"parse": []}
+
+
+@pytest.mark.asyncio
+async def test_document_growth_and_shrink_reuse_first_message_and_ignore_retired_events(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="# 起始內容\n")
+    first = await cog.sync_document(document)
+    repository.document.update(version=2, content_md="A" * 2000 + "B" * 2000 + "C")
+    await cog.sync_document(document)
+    ids = repository.message_ids()
+    surplus = [channel.messages[message_id] for message_id in ids[1:]]
+    repository.document.update(version=3, content_md="# 縮短後\n")
+
+    result = await cog.sync_document(document)
+    before_fetches = list(channel.fetch_calls)
+    for message_id in ids[1:]:
+        await cog.on_raw_message_delete(SimpleNamespace(guild_id=5001, message_id=message_id))
+        await cog.on_raw_message_edit(_edit_payload("old queued event", message_id=message_id))
+
+    assert result is first
+    assert repository.message_ids() == [first.id]
+    assert first.content == "# 縮短後\n"
+    assert len(channel.sent) == 2
+    assert all(message.deletes == 1 for message in surplus)
+    assert set(channel.messages) == {first.id}
+    assert channel.fetch_calls == before_fetches
+    assert all((5001, message_id) not in cog._document_message_index for message_id in ids[1:])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_position", [0, 1, 2])
+async def test_deleting_any_chunk_rebuilds_only_suffix_in_chronological_order(missing_position, monkeypatch):
+    content = "A" * 2000 + "B" * 2000 + "C"
+    cog, repository, channel, document = _sync_cog(monkeypatch, content=content)
+    await cog.sync_document(document)
+    old_ids = repository.message_ids()
+    old_messages = dict(channel.messages)
+    channel.messages.pop(old_ids[missing_position])
+
+    await cog.on_raw_message_delete(SimpleNamespace(guild_id=5001, message_id=old_ids[missing_position]))
+    new_ids = repository.message_ids()
+    before_fetches = list(channel.fetch_calls)
+    await cog.on_raw_message_delete(SimpleNamespace(guild_id=5001, message_id=old_ids[missing_position]))
+
+    assert new_ids[:missing_position] == old_ids[:missing_position]
+    assert new_ids[missing_position:] != old_ids[missing_position:]
+    assert new_ids == sorted(new_ids)
+    assert _parts_content(channel, repository) == content
+    assert all(message_id not in channel.messages for message_id in old_ids[missing_position:])
+    assert all(old_messages[message_id].deletes == 1 for message_id in old_ids[missing_position + 1:])
+    assert channel.fetch_calls == before_fetches
+    assert all(cog._document_message_index[(5001, message_id)] == "tools" for message_id in new_ids)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("position", [0, 1, 2])
+async def test_each_chunk_tampering_is_restored_and_own_echo_is_ignored(position, monkeypatch):
+    content = "A" * 2000 + "B" * 2000 + "C"
+    cog, repository, channel, document = _sync_cog(monkeypatch, content=content)
+    await cog.sync_document(document)
+    target = channel.messages[repository.message_ids()[position]]
+    before_edits = len(target.edits)
+    target.content = "unreviewed content"
+
+    await cog.on_raw_message_edit(_edit_payload(target.content, message_id=target.id))
+    before_fetches = list(channel.fetch_calls)
+    await cog.on_raw_message_edit(_edit_payload(target.content, message_id=target.id))
+
+    assert _parts_content(channel, repository) == content
+    assert len(target.edits) == before_edits + 1
+    assert channel.fetch_calls == before_fetches
+    assert target.edits[-1]["allowed_mentions"].to_dict() == {"parse": []}
+
+
+@pytest.mark.asyncio
+async def test_foreign_author_in_later_chunk_stops_all_edits_and_deletes(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    await cog.sync_document(document)
+    ids = repository.message_ids()
+    channel.messages[ids[1]].author.id = 123
+    before = {message_id: (len(message.edits), message.deletes) for message_id, message in channel.messages.items()}
+    repository.document.update(version=2, content_md="# 縮短\n")
+
+    with pytest.raises(ValueError, match="不是 Bot"):
+        await cog.sync_document(document)
+
+    assert repository.message_ids() == ids
+    assert {message_id: (len(message.edits), message.deletes) for message_id, message in channel.messages.items()} == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 500])
+async def test_second_chunk_send_failure_keeps_progress_for_retry_after_cog_reload(status, monkeypatch):
+    content = "A" * 2000 + "B" * 2000 + "C"
+    cog, repository, channel, document = _sync_cog(monkeypatch, content=content)
+    original_send = channel.send
+    attempts = 0
+
+    async def fail_second(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise _http_error(status)
+        return await original_send(**kwargs)
+
+    channel.send = fail_second
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    partial_ids = repository.message_ids()
+    assert len(partial_ids) == 2
+    assert len(channel.sent) == 1
+    reloaded = ResourceLibraryCog(cog.bot)
+    reloaded._repositories[5001] = repository
+    channel.send = original_send
+
+    await reloaded.sync_document(document)
+
+    assert repository.message_ids()[:2] == partial_ids
+    assert len(channel.sent) == 2
+    assert _parts_content(channel, repository) == content
+    assert not cog._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_later_edit_failure_does_not_repeat_already_successful_edits(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    await cog.sync_document(document)
+    first, second = [channel.messages[message_id] for message_id in repository.message_ids()]
+    repository.document.update(version=2, content_md="X" * 2000 + "Y")
+    original_edit = second.edit
+    second.edit = AsyncMock(side_effect=_http_error(500))
+
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    first_edits = len(first.edits)
+    second.edit = original_edit
+    await cog.sync_document(document)
+
+    assert len(first.edits) == first_edits
+    assert _parts_content(channel, repository) == repository.document["content_md"]
+    assert len(channel.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_later_delete_failure_checkpoints_tail_removal_and_retry_converges(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B" * 2000 + "C")
+    await cog.sync_document(document)
+    ids = repository.message_ids()
+    second, third = channel.messages[ids[1]], channel.messages[ids[2]]
+    original_delete = second.delete
+    second.delete = AsyncMock(side_effect=_http_error(500))
+    repository.document.update(version=2, content_md="# 短文件\n")
+
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    assert repository.message_ids() == ids[:2]
+    assert third.deletes == 1
+    second.delete = original_delete
+    await cog.sync_document(document)
+
+    assert repository.message_ids() == ids[:1]
+    assert third.deletes == 1
+    assert second.deletes == 1
+    assert _parts_content(channel, repository) == "# 短文件\n"
+
+
+@pytest.mark.asyncio
+async def test_failed_send_checkpoint_cleans_known_message_before_retry(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    original_store = repository.set_message_ids
+    repository.set_message_ids = AsyncMock(side_effect=OSError("test database unavailable"))
+
+    with pytest.raises(OSError):
+        await cog.sync_document(document)
+
+    assert repository.message_ids() == [8001]
+    assert set(channel.messages) == {8001}
+    assert not cog._pending_messages
+    repository.set_message_ids = original_store
+    await cog.sync_document(document)
+    assert _parts_content(channel, repository) == document["content_md"]
+    assert len(channel.sent) == 2
+    assert 9001 not in channel.messages
+
+
+@pytest.mark.asyncio
+async def test_failed_checkpoint_and_cleanup_recover_known_receipt_without_resending(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    original_store = repository.set_message_ids
+    original_send = channel.send
+    repository.set_message_ids = AsyncMock(side_effect=OSError("test database unavailable"))
+
+    async def send_with_failed_cleanup(**kwargs):
+        message = await original_send(**kwargs)
+        message.delete = AsyncMock(side_effect=_http_error(500))
+        return message
+
+    channel.send = send_with_failed_cleanup
+    with pytest.raises(OSError):
+        await cog.sync_document(document)
+    assert repository.message_ids() == [8001]
+    assert len(cog._pending_messages) == 1
+    repository.set_message_ids = original_store
+    channel.send = original_send
+
+    await cog.sync_document(document)
+
+    assert repository.message_ids() == [8001, 9001]
+    assert len(channel.sent) == 1
+    assert not cog._pending_messages
+    assert _parts_content(channel, repository) == document["content_md"]
+
+
+@pytest.mark.asyncio
+async def test_committed_checkpoint_with_lost_ack_is_verified_without_cleanup_or_resend(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    original_store = repository.set_message_ids
+
+    async def committed_then_failed(*args, **kwargs):
+        await original_store(*args, **kwargs)
+        raise OSError("test commit acknowledgement lost")
+
+    repository.set_message_ids = committed_then_failed
+
+    await cog.sync_document(document)
+    await cog.sync_document(document)
+
+    assert repository.message_ids() == [8001, 9001]
+    assert channel.messages[9001].deletes == 0
+    assert len(channel.sent) == 1
+    assert not cog._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_known_send_finishes_checkpoint_before_unlocking(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    original_store = repository.set_message_ids
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_store(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        await original_store(*args, **kwargs)
+
+    repository.set_message_ids = blocked_store
+    task = asyncio.create_task(cog.sync_document(document))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert cog._get_sync_lock((5001, "tools")).locked()
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert repository.message_ids() == [8001, 9001]
+    assert not cog._get_sync_lock((5001, "tools")).locked()
+    repository.set_message_ids = original_store
+
+    await cog.sync_document(document)
+
+    assert len(channel.sent) == 1
+    assert _parts_content(channel, repository) == document["content_md"]
+
+
+@pytest.mark.asyncio
+async def test_partial_send_429_keeps_ids_and_blocks_all_chunks_until_cooldown(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B" * 2000 + "C")
+    clock = [100.0]
+    monkeypatch.setattr("bot.cogs.resource_library.monotonic", lambda: clock[0])
+    original_send = channel.send
+    attempts = 0
+
+    async def rate_limit_second(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise discord.HTTPException(SimpleNamespace(status=429, reason="limited", headers={"Retry-After": "10"}), "limited")
+        return await original_send(**kwargs)
+
+    channel.send = rate_limit_second
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    fetches = list(channel.fetch_calls)
+    with pytest.raises(ValueError, match="退避"):
+        await cog.sync_document(document)
+    await cog.on_raw_message_edit(_edit_payload("tampered", message_id=9001))
+    assert channel.fetch_calls == fetches
+    assert repository.message_ids() == [8001, 9001]
+    clock[0] = 110.0
+    channel.send = original_send
+
+    await cog.sync_document(document)
+
+    assert len(channel.sent) == 2
+    assert _parts_content(channel, repository) == document["content_md"]
+
+
+@pytest.mark.asyncio
+async def test_bot_tail_delete_event_queued_before_checkpoint_does_not_recreate_it(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    await cog.sync_document(document)
+    tail = channel.messages[repository.message_ids()[1]]
+    original_delete = tail.delete
+    events = []
+
+    async def delete_with_raw_event():
+        await original_delete()
+        events.append(asyncio.create_task(cog.on_raw_message_delete(SimpleNamespace(guild_id=5001, message_id=tail.id))))
+        await asyncio.sleep(0)
+
+    tail.delete = delete_with_raw_event
+    repository.document.update(version=2, content_md="# 短文件\n")
+    await cog.sync_document(document)
+    await asyncio.gather(*events)
+
+    assert repository.message_ids() == [8001]
+    assert set(channel.messages) == {8001}
+    assert len(channel.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_expected_approval_version_cannot_report_newer_version_as_its_own_publish(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch)
+    repository.document.update(version=2, content_md="# 新版本\n")
+
+    with pytest.raises(ValueError, match="核准版本已被更新"):
+        await cog.sync_document(document, expected_version=1)
+
+    assert channel.fetch_calls == []
+    assert channel.sent == []
+
+
+@pytest.mark.asyncio
+async def test_http_accepts_maximum_escaped_unicode_document_above_old_request_size(tmp_path, monkeypatch):
+    cog, repository, _, _ = await _api_cog(tmp_path, monkeypatch)
+    cog.bot.logger = SimpleNamespace(info=lambda *args: None)
+    monkeypatch.setenv("RESOURCE_STANDALONE_ENABLED", "0")
+    monkeypatch.setenv("RESOURCE_WEB_HOST", "127.0.0.1")
+    monkeypatch.setenv("RESOURCE_WEB_PORT", "0")
+    content_md = "😀" * 10000
+    body = json.dumps({"base_version": 1, "content_md": content_md}, ensure_ascii=True)
+    assert 64 * 1024 < len(body.encode("utf-8")) < 256 * 1024
+    await cog._start_web_server()
+    try:
+        site = next(iter(cog._web_runner.sites))
+        port = site._server.sockets[0].getsockname()[1]
+        async with ClientSession() as session:
+            async with session.post(
+                f"http://127.0.0.1:{port}/api/guilds/5001/resources/tools/preview",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            ) as response:
+                assert response.status == 200
+                payload = await response.json()
+                assert payload["content_md"] == content_md
+                assert payload["message_count"] == 10
+    finally:
+        await cog._web_runner.cleanup()
+    assert (await repository.get_document("tools"))["version"] == 1
+
+
+async def _real_sync_cog(tmp_path, monkeypatch, content):
+    monkeypatch.setattr(discord, "TextChannel", FakeChannel)
+    repository = ResourceRepository(tmp_path / "resources.db")
+    await repository.initialize()
+    await repository.configure(
+        [{"slug": "tools", "title": "做備審的好工具", "channel_id": 7001}], 8100, 8200,
+    )
+    draft = await repository.create_draft("tools", 77, 1, content)
+    await repository.set_review_thread(draft["id"], 4001, 4002)
+    await repository.decide_draft(draft["id"], 88, True)
+    await repository.set_message_id("tools", 8001)
+    guild = FakeGuild(5001, None)
+    channel = FakeChannel(guild, FakeMessage(8001, 999, content="# 舊內容\n"))
+    guild.channel = channel
+    cog = ResourceLibraryCog(FakeBot(guild))
+    cog._repositories[5001] = repository
+    document = await repository.get_document("tools")
+    document["guild_id"] = guild.id
+    return cog, repository, guild, channel, document
+
+
+@pytest.mark.asyncio
+async def test_partial_publication_resumes_from_reopened_real_database(tmp_path, monkeypatch):
+    content = "A" * 2000 + "B" * 2000 + "C"
+    cog, repository, _, channel, document = await _real_sync_cog(tmp_path, monkeypatch, content)
+    original_send = channel.send
+    attempts = 0
+
+    async def second_send_fails(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise _http_error(500)
+        return await original_send(**kwargs)
+
+    channel.send = second_send_fails
+    with pytest.raises(discord.HTTPException):
+        await cog.sync_document(document)
+    partial = await repository.get_document("tools")
+    assert partial["message_ids"] == [8001, 9001]
+    assert partial["content_md"] == content
+    assert partial["version"] == 2
+    reopened = ResourceRepository(repository.db_path)
+    await reopened.initialize()
+    reloaded = ResourceLibraryCog(cog.bot)
+    reloaded._repositories[5001] = reopened
+    channel.send = original_send
+
+    await reloaded.sync_document(document)
+
+    current = await reopened.get_document("tools")
+    assert current["message_ids"][:2] == partial["message_ids"]
+    assert len(channel.sent) == 2
+    assert "".join(channel.messages[message_id].content for message_id in current["message_ids"]) == content
+    assert current["updated_by"] == partial["updated_by"]
+    assert current["updated_at"] == partial["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_approval_waits_for_existing_multipart_publication_lock(tmp_path, monkeypatch):
+    old_content = "A" * 2000 + "B"
+    new_content = "X" * 2000 + "Y"
+    cog, repository, guild, channel, document = await _real_sync_cog(tmp_path, monkeypatch, old_content)
+    draft = await repository.create_draft("tools", 77, 2, new_content)
+    await repository.set_review_thread(draft["id"], 4101, 4102)
+    guild.fetch_member = AsyncMock(return_value=SimpleNamespace(
+        id=88, guild_permissions=SimpleNamespace(administrator=False, manage_guild=True),
+    ))
+    interaction = SimpleNamespace(
+        guild=guild, guild_id=guild.id, channel=SimpleNamespace(), channel_id=4101,
+        message=FakeMessage(4102, 999), user=SimpleNamespace(id=88),
+        response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()),
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    waiting = asyncio.Event()
+    original_edit = channel.messages[8001].edit
+    original_lock = cog._get_sync_lock
+    repository.decide_draft = AsyncMock(wraps=repository.decide_draft)
+    approval = None
+
+    async def blocked_edit(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original_edit(**kwargs)
+
+    def observed_lock(key):
+        if asyncio.current_task() is approval:
+            waiting.set()
+        return original_lock(key)
+
+    channel.messages[8001].edit = blocked_edit
+    cog._get_sync_lock = observed_lock
+    first = asyncio.create_task(cog.sync_document(document))
+    await entered.wait()
+    approval = asyncio.create_task(cog.resolve_review(interaction, approve=True))
+    await waiting.wait()
+    assert (await repository.get_document("tools"))["version"] == 2
+    repository.decide_draft.assert_not_awaited()
+    assert not approval.done()
+    release.set()
+    await asyncio.gather(first, approval)
+    repository.decide_draft.assert_awaited_once()
+
+    current = await repository.get_document("tools")
+    assert current["version"] == 3
+    assert "".join(channel.messages[message_id].content for message_id in current["message_ids"]) == new_content
+    assert len(channel.sent) == 1
+    assert "已同意並發布" in interaction.message.edits[0]["embed"].description
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["revoked", "unavailable"])
+async def test_review_rechecks_permissions_after_waiting_for_publication_lock(failure, tmp_path, monkeypatch):
+    cog, repository, guild, _ = await _api_cog(tmp_path, monkeypatch)
+    before = await repository.get_document("tools")
+    draft = await repository.create_draft("tools", 77, 1, "A" * 2000 + "B")
+    await repository.set_review_thread(draft["id"], 4001, 4002)
+    permitted = SimpleNamespace(id=88, guild_permissions=SimpleNamespace(administrator=False, manage_guild=True))
+    revoked = SimpleNamespace(id=88, guild_permissions=SimpleNamespace(administrator=False, manage_guild=False))
+    guild.fetch_member = AsyncMock(side_effect=[permitted, revoked if failure == "revoked" else _http_error(500)])
+    interaction = SimpleNamespace(
+        guild=guild, guild_id=guild.id, channel=SimpleNamespace(), channel_id=4001,
+        message=FakeMessage(4002, 999), user=SimpleNamespace(id=88),
+        response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()),
+    )
+    original_lock = cog._get_sync_lock
+    lock = original_lock((guild.id, "tools"))
+    waiting = asyncio.Event()
+
+    def observed_lock(key):
+        waiting.set()
+        return original_lock(key)
+
+    cog._get_sync_lock = observed_lock
+    cog.sync_document = AsyncMock()
+    async with lock:
+        review = asyncio.create_task(cog.resolve_review(interaction, approve=True))
+        await waiting.wait()
+        assert guild.fetch_member.await_count == 1
+        assert not review.done()
+    await review
+
+    assert guild.fetch_member.await_count == 2
+    assert (await repository.get_draft(draft["id"]))["status"] == "pending"
+    assert await repository.get_document("tools") == before
+    assert interaction.message.edits == []
+    cog.sync_document.assert_not_awaited()
+    assert "權限" in interaction.followup.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_pending_known_send_is_deleted_when_latest_document_no_longer_needs_it(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    original_store = repository.set_message_ids
+    original_send = channel.send
+    receipt = []
+
+    async def send_with_failed_cleanup(**kwargs):
+        message = await original_send(**kwargs)
+        receipt.append((message, message.delete))
+        message.delete = AsyncMock(side_effect=_http_error(500))
+        return message
+
+    channel.send = send_with_failed_cleanup
+    repository.set_message_ids = AsyncMock(side_effect=OSError("test database unavailable"))
+    with pytest.raises(OSError):
+        await cog.sync_document(document)
+    message, original_delete = receipt[0]
+    assert cog._pending_messages
+    repository.document.update(version=2, content_md="# 較短的新版本\n")
+    repository.set_message_ids = original_store
+    message.delete = original_delete
+
+    await cog.sync_document(document)
+
+    assert repository.message_ids() == [8001]
+    assert set(channel.messages) == {8001}
+    assert channel.messages[8001].content == repository.document["content_md"]
+    assert message.deletes == 1
+    assert len(channel.sent) == 1
+    assert not cog._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_version_change_during_send_rejects_stale_id_checkpoint_and_cleans_receipt(monkeypatch):
+    cog, repository, channel, document = _sync_cog(monkeypatch, content="A" * 2000 + "B")
+    original_send = channel.send
+
+    async def send_after_external_update(**kwargs):
+        message = await original_send(**kwargs)
+        repository.document.update(version=2, content_md="# 最新正式版本\n")
+        return message
+
+    channel.send = send_after_external_update
+    with pytest.raises(ValueError, match="已變更"):
+        await cog.sync_document(document)
+    assert repository.message_ids() == [8001]
+    assert set(channel.messages) == {8001}
+    assert not cog._pending_messages
+
+    await cog.sync_document(document)
+
+    assert channel.messages[8001].content == "# 最新正式版本\n"
+    assert repository.document["version"] == 2
+    assert len(channel.sent) == 1

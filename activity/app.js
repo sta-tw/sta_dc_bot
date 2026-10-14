@@ -1,3 +1,6 @@
+const DEFAULT_MAX_MARKDOWN_CHARS = 20000;
+const DEFAULT_DISCORD_MESSAGE_CHARS = 2000;
+
 const state = {
   sdk: null,
   token: null,
@@ -6,6 +9,8 @@ const state = {
   selectedSlug: null,
   document: null,
   contentMarkdown: "",
+  maxMarkdownChars: DEFAULT_MAX_MARKDOWN_CHARS,
+  discordMessageChars: DEFAULT_DISCORD_MESSAGE_CHARS,
   lastPreview: null,
   showingDiff: false,
   dirty: false,
@@ -70,6 +75,33 @@ async function requestJson(path, options = {}) {
 
 function currentMarkdown() {
   return state.contentMarkdown;
+}
+
+function applyConfigLimits(config) {
+  state.maxMarkdownChars = Number.isSafeInteger(config.max_markdown_chars) && config.max_markdown_chars > 0
+    ? config.max_markdown_chars
+    : DEFAULT_MAX_MARKDOWN_CHARS;
+  state.discordMessageChars = Number.isSafeInteger(config.discord_message_chars) && config.discord_message_chars > 0
+    ? config.discord_message_chars
+    : DEFAULT_DISCORD_MESSAGE_CHARS;
+}
+
+function updateMarkdownCounter(value, counter, textarea) {
+  const overLimit = value.length > state.maxMarkdownChars;
+  const current = value.length.toLocaleString("zh-TW");
+  const maximum = state.maxMarkdownChars.toLocaleString("zh-TW");
+  counter.textContent = `${current} / ${maximum} UTF-16 字元${overLimit ? " · 超過上限" : ""}`;
+  counter.classList.toggle("danger-text", overLimit);
+  textarea.setAttribute("aria-invalid", String(overLimit));
+  elements.previewButton.disabled = !state.document || overLimit;
+  elements.submitButton.disabled = !state.document || state.loading || overLimit;
+  return overLimit;
+}
+
+function ensureMarkdownWithinLimit() {
+  if (currentMarkdown().length > state.maxMarkdownChars) {
+    throw new Error(`Markdown 超過 ${state.maxMarkdownChars.toLocaleString("zh-TW")} 個 UTF-16 字元上限。`);
+  }
 }
 
 function updateStatus() {
@@ -142,19 +174,29 @@ function renderEditor() {
   }
 
   const field = el("label", "field-label markdown-label", "Markdown 原始內容");
-  const hint = el("span", "editor-hint", "直接編輯完整 Markdown；提交後仍須管理員審核才會更新正式內容。最多 2,000 字元。 ");
+  const hint = el(
+    "span",
+    "editor-hint",
+    `超過單則 Discord 上限 ${state.discordMessageChars.toLocaleString("zh-TW")} 時會自動拆分訊息；提交後仍須管理員審核。原文上限 ${state.maxMarkdownChars.toLocaleString("zh-TW")} 個 UTF-16 字元，請先預覽確認。`,
+  );
   const textarea = el("textarea", "markdown-editor");
   textarea.id = "markdown-editor";
   textarea.rows = 28;
-  textarea.maxLength = 2000;
+  textarea.maxLength = state.maxMarkdownChars;
   textarea.wrap = "soft";
   textarea.spellcheck = false;
   textarea.value = state.contentMarkdown;
+  const counter = el("output", "editor-hint");
+  counter.setAttribute("aria-live", "polite");
+  counter.id = "markdown-counter";
+  textarea.setAttribute("aria-describedby", counter.id);
   textarea.addEventListener("input", () => {
     state.contentMarkdown = textarea.value;
     markDirty();
+    updateMarkdownCounter(textarea.value, counter, textarea);
   });
-  field.append(hint, textarea);
+  updateMarkdownCounter(state.contentMarkdown, counter, textarea);
+  field.append(hint, textarea, counter);
   elements.editor.append(field);
   updateStatus();
 }
@@ -179,6 +221,7 @@ function selectDocument(slug) {
 
 async function getPreview() {
   if (!state.document) throw new Error("請先選擇文件。");
+  ensureMarkdownWithinLimit();
   const result = await requestJson(
     `/api/guilds/${encodeURIComponent(state.guildId)}/resources/${encodeURIComponent(state.document.slug)}/preview`,
     {
@@ -234,6 +277,12 @@ async function reloadCurrentDocument() {
 
 async function submitDraft() {
   if (!state.document || state.loading) return;
+  try {
+    ensureMarkdownWithinLimit();
+  } catch (error) {
+    showToast(error.message, true);
+    return;
+  }
   state.loading = true;
   elements.submitButton.disabled = true;
   elements.editStatus.textContent = "正在驗證內容並建立審核 Draft…";
@@ -264,7 +313,7 @@ async function submitDraft() {
     showToast(error.message, true);
   } finally {
     state.loading = false;
-    elements.submitButton.disabled = !state.document;
+    elements.submitButton.disabled = !state.document || currentMarkdown().length > state.maxMarkdownChars;
   }
 }
 
@@ -357,6 +406,7 @@ async function startActivity(config) {
 
 async function startEditor() {
   const config = await requestJson("/api/config");
+  applyConfigLimits(config);
   if (config.standalone) {
     await startStandalone(config);
   } else {

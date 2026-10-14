@@ -10,6 +10,7 @@ import secrets
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from sqlite3 import Error as SQLiteError
 from time import monotonic
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -21,12 +22,18 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.utils.config_paths import ConfigPaths
-from bot.utils.resource_library_markdown import markdown_diff, validate_markdown_links
+from bot.utils.resource_library_markdown import (
+    MAX_DISCORD_MESSAGE_CHARS,
+    MAX_MARKDOWN_CHARS,
+    markdown_diff,
+    split_resource_markdown,
+    utf16_length,
+    validate_markdown_links,
+)
 from database.resource_library import ResourceRepository, StaleDocumentError
 
 
 logger = logging.getLogger(__name__)
-MAX_MARKDOWN_CHARS = 2000
 RESOURCE_DOCUMENTS = (
     ("communities", "資訊社群分享"),
     ("learning", "學習、比賽資源分享"),
@@ -48,6 +55,13 @@ class _ResourcePublication:
     channel_id: int
     requested_content: str
     returned_content: str
+    message: discord.Message
+
+
+@dataclass(frozen=True)
+class _PendingResourceMessage:
+    channel_id: int
+    expected_message_ids: tuple[int, ...]
     message: discord.Message
 
 
@@ -120,7 +134,8 @@ class ResourceLibraryCog(commands.Cog):
         self._document_message_index: dict[tuple[int, int], str] = {}
         self._sync_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._sync_not_before: dict[tuple[int, str], float] = {}
-        self._published_documents: dict[tuple[int, str], _ResourcePublication] = {}
+        self._published_messages: dict[tuple[int, int], _ResourcePublication] = {}
+        self._pending_messages: dict[tuple[int, str], _PendingResourceMessage] = {}
         self._http_session: aiohttp.ClientSession | None = None
         self._web_runner: web.AppRunner | None = None
         self._startup_sync_done = False
@@ -156,7 +171,7 @@ class ResourceLibraryCog(commands.Cog):
 
     async def _start_web_server(self) -> None:
         activity_dir = Path(__file__).resolve().parents[2] / "activity"
-        app = web.Application(client_max_size=64 * 1024)
+        app = web.Application(client_max_size=256 * 1024)
         app.add_routes(
             [
                 web.get("/", self._activity_index),
@@ -306,6 +321,8 @@ class ResourceLibraryCog(commands.Cog):
                 "scope": ["identify"],
                 "standalone": standalone,
                 "guild_id": guild_id,
+                "max_markdown_chars": MAX_MARKDOWN_CHARS,
+                "discord_message_chars": MAX_DISCORD_MESSAGE_CHARS,
             }
         )
 
@@ -523,15 +540,20 @@ class ResourceLibraryCog(commands.Cog):
         if not content_md.strip():
             raise web.HTTPBadRequest(text="Markdown 內容不可為空。")
         try:
-            validate_markdown_links(content_md)
+            length = utf16_length(content_md)
         except ValueError as exc:
-            raise web.HTTPBadRequest(text=str(exc))
-        if len(content_md) > MAX_MARKDOWN_CHARS:
+            raise web.HTTPBadRequest(text="Markdown 含有無效的 Unicode 字元。") from exc
+        if length > MAX_MARKDOWN_CHARS:
             raise web.HTTPRequestEntityTooLarge(
                 max_size=MAX_MARKDOWN_CHARS,
-                actual_size=len(content_md),
-                text=f"Markdown 超過單則 Discord 訊息的 {MAX_MARKDOWN_CHARS} 字元限制。",
+                actual_size=length,
+                text=f"Markdown 超過完整文件的 {MAX_MARKDOWN_CHARS:,} 字元限制。",
             )
+        try:
+            validate_markdown_links(content_md)
+            split_resource_markdown(content_md)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
         return content_md
 
     async def _api_preview(self, request: web.Request) -> web.Response:
@@ -553,6 +575,7 @@ class ResourceLibraryCog(commands.Cog):
             {
                 "content_md": after_md,
                 "diff": markdown_diff(document["content_md"], after_md),
+                "message_count": len(split_resource_markdown(after_md)),
             }
         )
 
@@ -637,7 +660,7 @@ class ResourceLibraryCog(commands.Cog):
         )
         embed = self._draft_embed(document, draft, submitter_name)
         files = []
-        if len(draft["diff"]) > 3600:
+        if utf16_length(draft["diff"]) > 3600:
             files.append(
                 discord.File(
                     io.BytesIO(draft["diff"].encode("utf-8")),
@@ -675,6 +698,23 @@ class ResourceLibraryCog(commands.Cog):
         permissions = member.guild_permissions
         return bool(permissions.administrator or permissions.manage_guild)
 
+    async def _refresh_reviewer(self, interaction: discord.Interaction) -> discord.Member | None:
+        guild = interaction.guild
+        assert guild is not None
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.HTTPException:
+            logger.exception("Could not refresh reviewer permissions for user %s", interaction.user.id)
+            await interaction.followup.send("無法重新驗證你的 Discord 權限，請稍後再試。", ephemeral=True)
+            return None
+        if not self._can_review(member):
+            await interaction.followup.send(
+                "只有具有「管理伺服器」或「管理員」權限的成員可以審核。",
+                ephemeral=True,
+            )
+            return None
+        return member
+
     async def resolve_review(
         self,
         interaction: discord.Interaction,
@@ -692,17 +732,8 @@ class ResourceLibraryCog(commands.Cog):
         if guild is None or interaction.channel_id is None or interaction.message is None:
             await interaction.followup.send("此審核操作只能在伺服器 Review Thread 中使用。", ephemeral=True)
             return
-        try:
-            member = await guild.fetch_member(interaction.user.id)
-        except discord.HTTPException:
-            logger.exception("Could not refresh reviewer permissions for user %s", interaction.user.id)
-            await interaction.followup.send("無法重新驗證你的 Discord 權限，請稍後再試。", ephemeral=True)
-            return
-        if not self._can_review(member):
-            await interaction.followup.send(
-                "只有具有「管理伺服器」或「管理員」權限的成員可以審核。",
-                ephemeral=True,
-            )
+        member = await self._refresh_reviewer(interaction)
+        if member is None:
             return
 
         repository = self.repository(guild.id)
@@ -723,9 +754,16 @@ class ResourceLibraryCog(commands.Cog):
             return
 
         try:
-            result = await repository.decide_draft(
-                draft["id"], reviewer_id=member.id, approve=approve
-            )
+            lock = self._get_sync_lock((guild.id, draft["document_slug"]))
+            waited = lock.locked()
+            async with lock:
+                if waited:
+                    member = await self._refresh_reviewer(interaction)
+                    if member is None:
+                        return
+                result = await repository.decide_draft(
+                    draft["id"], reviewer_id=member.id, approve=approve
+                )
         except KeyError:
             await interaction.followup.send("找不到此草稿。", ephemeral=True)
             return
@@ -748,8 +786,10 @@ class ResourceLibraryCog(commands.Cog):
         if approve:
             try:
                 result["document"]["guild_id"] = guild.id
-                await self.sync_document(result["document"])
-            except (discord.HTTPException, ValueError):
+                await self.sync_document(
+                    result["document"], expected_version=int(result["document"]["version"])
+                )
+            except (discord.HTTPException, OSError, SQLiteError, ValueError):
                 logger.exception("Database update succeeded but Discord sync failed for %s", draft["id"])
                 sync_error = "資料庫已更新，但 Discord 正式訊息同步失敗；請執行 /resource_sync 重試。"
 
@@ -809,24 +849,139 @@ class ResourceLibraryCog(commands.Cog):
     def _document_content(document: dict[str, Any]) -> str:
         return document["content_md"] or f"# {document['title']}"
 
-    def _get_publication(self, document: dict[str, Any]) -> _ResourcePublication | None:
-        key = (self._document_guild_id(document), document["slug"])
-        publication = self._published_documents.get(key)
+    @staticmethod
+    def _message_ids(document: dict[str, Any]) -> list[int]:
+        if "message_ids" in document:
+            return [int(message_id) for message_id in document["message_ids"]]
+        message_id = document.get("message_id")
+        return [int(message_id)] if message_id else []
+
+    def _index_document(self, document: dict[str, Any]) -> None:
+        guild_id = self._document_guild_id(document)
+        message_ids = set(self._message_ids(document))
+        for key, slug in list(self._document_message_index.items()):
+            if key[0] == guild_id and slug == document["slug"] and key[1] not in message_ids:
+                self._document_message_index.pop(key, None)
+                self._published_messages.pop(key, None)
+        for message_id in message_ids:
+            self._document_message_index[(guild_id, message_id)] = document["slug"]
+
+    def _get_publication(
+        self, document: dict[str, Any], message_id: int, content: str
+    ) -> _ResourcePublication | None:
+        key = (self._document_guild_id(document), message_id)
+        publication = self._published_messages.get(key)
         if publication is not None and (
             publication.version == int(document["version"])
             and publication.channel_id == int(document["channel_id"])
-            and publication.message.id == int(document["message_id"] or 0)
-            and publication.requested_content == self._normalize_content(self._document_content(document))
+            and publication.requested_content == self._normalize_content(content)
         ):
             return publication
-        self._published_documents.pop(key, None)
+        self._published_messages.pop(key, None)
         return None
+
+    def _remember_publication(
+        self, document: dict[str, Any], content: str, message: discord.Message
+    ) -> None:
+        self._published_messages[(self._document_guild_id(document), message.id)] = _ResourcePublication(
+            version=int(document["version"]),
+            channel_id=int(document["channel_id"]),
+            requested_content=self._normalize_content(content),
+            returned_content=self._normalize_content(message.content),
+            message=message,
+        )
+
+    def _defer_rate_limited_sync(self, key: tuple[int, str], exc: discord.HTTPException) -> None:
+        if exc.status != 429:
+            return
+        headers = getattr(exc.response, "headers", {}) or {}
+        try:
+            retry_after = float(headers.get("Retry-After", 60.0))
+        except (TypeError, ValueError):
+            retry_after = 60.0
+        if not isfinite(retry_after) or retry_after <= 0:
+            retry_after = 60.0
+        self._sync_not_before[key] = monotonic() + retry_after
+
+    async def _store_message_ids(self, document: dict[str, Any], message_ids: list[int]) -> None:
+        repository = self.repository(self._document_guild_id(document))
+        task = asyncio.create_task(repository.set_message_ids(
+            document["slug"],
+            message_ids,
+            expected_channel_id=int(document["channel_id"]),
+            expected_version=int(document["version"]),
+            expected_message_ids=self._message_ids(document),
+        ))
+
+        def record() -> None:
+            document["message_ids"] = list(message_ids)
+            document["message_id"] = message_ids[0] if message_ids else None
+            self._index_document(document)
+
+        async def committed() -> bool:
+            try:
+                current = await repository.get_document(document["slug"])
+            except (OSError, SQLiteError):
+                return False
+            return current is not None and (
+                int(current["version"]) == int(document["version"])
+                and int(current["channel_id"]) == int(document["channel_id"])
+                and self._message_ids(current) == message_ids
+            )
+
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as cancelled:
+            try:
+                await task
+            except Exception as exc:
+                if await committed():
+                    record()
+                raise cancelled from exc
+            record()
+            raise
+        except (OSError, SQLiteError):
+            if not await committed():
+                raise
+        record()
+
+    async def _discard_pending_message(self, key: tuple[int, str]) -> None:
+        pending = self._pending_messages[key]
+        try:
+            await pending.message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as exc:
+            self._defer_rate_limited_sync(key, exc)
+            raise
+        self._pending_messages.pop(key, None)
+        self._document_message_index.pop((key[0], pending.message.id), None)
+        self._published_messages.pop((key[0], pending.message.id), None)
+
+    async def _recover_pending_message(self, document: dict[str, Any], part_count: int) -> None:
+        key = (self._document_guild_id(document), document["slug"])
+        pending = self._pending_messages.get(key)
+        if pending is None:
+            return
+        message_ids = self._message_ids(document)
+        if pending.channel_id == int(document["channel_id"]) and pending.message.id in message_ids:
+            self._pending_messages.pop(key, None)
+        elif (
+            pending.channel_id == int(document["channel_id"])
+            and pending.expected_message_ids == tuple(message_ids)
+            and part_count > len(message_ids)
+        ):
+            await self._store_message_ids(document, [*message_ids, pending.message.id])
+            self._pending_messages.pop(key, None)
+        else:
+            await self._discard_pending_message(key)
 
     async def sync_document(
         self,
         document: dict[str, Any],
         *,
         expected_message_id: int | None = None,
+        expected_version: int | None = None,
         event_content: str | None = None,
         deleted: bool = False,
     ) -> discord.Message | None:
@@ -842,29 +997,32 @@ class ResourceLibraryCog(commands.Cog):
             if current is None:
                 raise ValueError("找不到此資源文件。")
             current["guild_id"] = guild_id
-            if expected_message_id is not None and int(current["message_id"] or 0) != expected_message_id:
+            if expected_version is not None and int(current["version"]) != expected_version:
+                raise ValueError("核准版本已被更新，請重新執行 /resource_sync 同步最新版本。")
+            self._index_document(current)
+            message_ids = self._message_ids(current)
+            if expected_message_id is not None and expected_message_id not in message_ids:
                 return None
-            if deleted:
-                self._published_documents.pop(key, None)
-            publication = self._get_publication(current)
-            if (
-                event_content is not None
-                and publication is not None
-                and self._normalize_content(event_content) == publication.returned_content
-            ):
-                return publication.message
+            if expected_message_id is not None:
+                if deleted:
+                    self._published_messages.pop((guild_id, expected_message_id), None)
+                else:
+                    parts = split_resource_markdown(self._document_content(current))
+                    position = message_ids.index(expected_message_id)
+                    publication = (
+                        self._get_publication(current, expected_message_id, parts[position])
+                        if position < len(parts) else None
+                    )
+                    if (
+                        event_content is not None
+                        and publication is not None
+                        and self._normalize_content(event_content) == publication.returned_content
+                    ):
+                        return publication.message
             try:
                 return await self._publish_document(current)
             except discord.HTTPException as exc:
-                if exc.status == 429:
-                    headers = getattr(exc.response, "headers", {}) or {}
-                    try:
-                        retry_after = float(headers.get("Retry-After", 60.0))
-                    except (TypeError, ValueError):
-                        retry_after = 60.0
-                    if not isfinite(retry_after) or retry_after <= 0:
-                        retry_after = 60.0
-                    self._sync_not_before[key] = monotonic() + retry_after
+                self._defer_rate_limited_sync(key, exc)
                 raise
 
     async def _publish_document(self, document: dict[str, Any]) -> discord.Message:
@@ -879,49 +1037,86 @@ class ResourceLibraryCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild_id:
             raise ValueError("資源文件指定的頻道無效。")
 
-        content = self._document_content(document)
-        repository = self.repository(guild_id)
-        publication = self._get_publication(document)
-        message_id = document.get("message_id")
-        message = None
-        if message_id:
+        parts = split_resource_markdown(self._document_content(document))
+        await self._recover_pending_message(document, len(parts))
+        message_ids = self._message_ids(document)
+        messages: list[discord.Message | None] = []
+        for message_id in message_ids:
             try:
-                message = await channel.fetch_message(int(message_id))
+                message = await channel.fetch_message(message_id)
             except discord.NotFound:
                 message = None
-        if message is not None:
-            if self.bot.user is None or message.author.id != self.bot.user.id:
+            if message is not None and (self.bot.user is None or message.author.id != self.bot.user.id):
                 raise ValueError("資料庫記錄的正式訊息不是 Bot 建立的，已停止同步以避免覆寫他人訊息。")
-        if message is None:
-            self._published_documents.pop(key, None)
-            message = await channel.send(
-                content=content,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            if message_id:
-                self._document_message_index.pop((guild_id, int(message_id)), None)
-            await repository.set_message_id(document["slug"], message.id)
-        else:
-            actual_content = self._normalize_content(message.content)
-            content_matches = actual_content == self._normalize_content(content)
-            if publication is not None and actual_content == publication.returned_content:
-                content_matches = True
-            if not content_matches:
-                self._published_documents.pop(key, None)
-                message = await message.edit(
+            messages.append(message)
+
+        missing = next((index for index, message in enumerate(messages) if message is None), len(messages))
+        keep_count = min(len(parts), missing)
+        while len(message_ids) > keep_count:
+            message = messages[-1]
+            if message is not None:
+                try:
+                    await message.delete()
+                except discord.NotFound:
+                    pass
+            await self._store_message_ids(document, message_ids[:-1])
+            message_ids.pop()
+            messages.pop()
+
+        for position, content in enumerate(parts):
+            message = messages[position] if position < len(messages) else None
+            if message is None:
+                message = await channel.send(
                     content=content,
-                    embed=None,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
-        self._document_message_index[(guild_id, message.id)] = document["slug"]
-        self._published_documents[key] = _ResourcePublication(
-            version=int(document["version"]),
-            channel_id=int(document["channel_id"]),
-            requested_content=self._normalize_content(content),
-            returned_content=self._normalize_content(message.content),
-            message=message,
-        )
-        return message
+                self._pending_messages[key] = _PendingResourceMessage(
+                    channel_id=int(document["channel_id"]),
+                    expected_message_ids=tuple(message_ids),
+                    message=message,
+                )
+                self._document_message_index[(guild_id, message.id)] = document["slug"]
+                try:
+                    await self._store_message_ids(document, [*message_ids, message.id])
+                except BaseException:
+                    if message.id in self._message_ids(document):
+                        self._pending_messages.pop(key, None)
+                    else:
+                        try:
+                            await self._discard_pending_message(key)
+                        except (discord.HTTPException, OSError):
+                            pass
+                    raise
+                self._pending_messages.pop(key, None)
+                message_ids.append(message.id)
+                messages.append(message)
+            else:
+                publication = self._get_publication(document, message.id, content)
+                actual_content = self._normalize_content(message.content)
+                content_matches = actual_content == self._normalize_content(content)
+                if publication is not None and actual_content == publication.returned_content:
+                    content_matches = True
+                if not content_matches:
+                    self._published_messages.pop((guild_id, message.id), None)
+                    message = await message.edit(
+                        content=content,
+                        embed=None,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    messages[position] = message
+            self._remember_publication(document, content, message)
+
+        current = await self.repository(guild_id).get_document(document["slug"])
+        if current is None or (
+            int(current["version"]) != int(document["version"])
+            or int(current["channel_id"]) != int(document["channel_id"])
+            or current["content_md"] != document["content_md"]
+            or self._message_ids(current) != message_ids
+        ):
+            raise ValueError("文件或正式訊息已變更，請重新執行 /resource_sync。")
+        first = messages[0]
+        assert first is not None
+        return first
 
     @staticmethod
     def _document_guild_id(document: dict[str, Any]) -> int:
@@ -933,8 +1128,11 @@ class ResourceLibraryCog(commands.Cog):
     async def _sync_guild(self, guild: discord.Guild) -> None:
         repository = self.repository(guild.id)
         await repository.initialize()
-        for document in await self._active_documents(repository):
+        documents = await self._active_documents(repository)
+        for document in documents:
             document["guild_id"] = guild.id
+            self._index_document(document)
+        for document in documents:
             await self.sync_document(document)
 
     @commands.Cog.listener()
@@ -953,7 +1151,7 @@ class ResourceLibraryCog(commands.Cog):
                 continue
             try:
                 await self._sync_guild(guild)
-            except (discord.HTTPException, OSError, ValueError):
+            except (discord.HTTPException, OSError, SQLiteError, ValueError):
                 logger.exception("Resource message startup synchronization failed for guild %s", guild.id)
 
     async def _sync_registered_message(
@@ -981,7 +1179,7 @@ class ResourceLibraryCog(commands.Cog):
             )
         except ResourceSyncDeferredError:
             return
-        except (discord.HTTPException, OSError, ValueError):
+        except (discord.HTTPException, OSError, SQLiteError, ValueError):
             logger.exception("Resource message reconciliation failed for %s in guild %s", message_id, guild_id)
 
     @commands.Cog.listener()
@@ -1069,7 +1267,7 @@ class ResourceLibraryCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        except (discord.HTTPException, OSError, ValueError) as exc:
+        except (discord.HTTPException, OSError, SQLiteError, ValueError) as exc:
             logger.exception("Resource system setup failed for guild %s", interaction.guild.id)
             await interaction.followup.send(f"設定失敗：{exc}", ephemeral=True)
             return
@@ -1127,8 +1325,10 @@ class ResourceLibraryCog(commands.Cog):
                 return
             for document in documents:
                 document["guild_id"] = interaction.guild.id
+                self._index_document(document)
+            for document in documents:
                 await self.sync_document(document)
-        except (discord.HTTPException, OSError, ValueError) as exc:
+        except (discord.HTTPException, OSError, SQLiteError, ValueError) as exc:
             logger.exception("Manual resource sync failed for guild %s", interaction.guild.id)
             await interaction.followup.send(f"同步失敗：{exc}", ephemeral=True)
             return
