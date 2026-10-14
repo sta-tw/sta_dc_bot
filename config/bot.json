@@ -65,7 +65,8 @@
     "bot.cogs.king_of_nonsense",
     "bot.cogs.ai_chat",
     "bot.cogs.instagram_feed",
-    "bot.cogs.resource_library"
+    "bot.cogs.resource_library",
+    "bot.cogs.google_meme"
   ],
   "faq_content": "",
   "llm": {
