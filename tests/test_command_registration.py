@@ -8,7 +8,12 @@ import pytest
 from discord import app_commands
 from discord.ext import commands
 
-from bot import _GLOBAL_FALLBACK_COMMANDS, _sync_global_commands, _sync_global_resource_setup_command
+from bot import (
+    _GLOBAL_FALLBACK_COMMANDS,
+    _sync_global_commands,
+    _sync_global_resource_setup_command,
+    _sync_missing_global_commands,
+)
 from bot.cogs.ai_chat import AiChat
 from bot.cogs.king_of_nonsense import KingOfNonsense
 from bot.cogs.resource_library import ResourceLibraryCog
@@ -292,4 +297,28 @@ async def test_global_50240_fallback_propagates_targeted_http_errors():
         await _sync_global_resource_setup_command(bot)
 
     bot.http.edit_global_command.assert_awaited_once()
+    bot.http.bulk_upsert_global_commands.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_missing_global_commands_creates_only_missing_context_menu():
+    from bot.cogs.google_meme import COMMAND_NAME, GoogleMeme
+
+    bot = _make_bot()
+    bot.tree.add_command(GoogleMeme(bot).context_menu)
+    bot.http.get_global_commands.return_value = [
+        _remote_command(bot, 1001),
+        _entry_point_command(),
+    ]
+    llm_channel = bot.tree.get_command("llm_channel").to_dict(bot.tree)
+    llm_channel.update({"id": 1002, "application_id": APPLICATION_ID})
+    leaderboard = KingOfNonsense.leaderboard.to_dict(bot.tree)
+    leaderboard.update({"id": 1003, "application_id": APPLICATION_ID})
+    bot.http.get_global_commands.return_value += [llm_channel, leaderboard]
+
+    statuses = await _sync_missing_global_commands(bot)
+
+    assert statuses == {COMMAND_NAME: "created"}
+    bot.http.upsert_global_command.assert_awaited_once()
+    assert bot.http.upsert_global_command.await_args.args[1]["type"] == 3
     bot.http.bulk_upsert_global_commands.assert_not_awaited()

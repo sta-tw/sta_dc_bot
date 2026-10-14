@@ -101,6 +101,7 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
                         bot,
                         _GLOBAL_FALLBACK_COMMANDS,
                     )
+                    sync_statuses.update(await _sync_missing_global_commands(bot))
                 except Exception:
                     bot.logger.exception(
                         "Targeted command sync failed after global sync was rejected; "
@@ -149,11 +150,26 @@ def _normalize_app_command_option(option: object) -> dict[str, object]:
     return normalized
 
 
-async def _sync_global_chat_input_command(
+def _find_local_command(
+    bot: commands.Bot,
+    command_name: str,
+) -> app_commands.Command | app_commands.ContextMenu | None:
+    for cmd_type in (
+        discord.AppCommandType.chat_input,
+        discord.AppCommandType.message,
+        discord.AppCommandType.user,
+    ):
+        cmd = bot.tree.get_command(command_name, type=cmd_type)
+        if cmd is not None:
+            return cmd
+    return None
+
+
+async def _sync_global_single_command(
     bot: commands.Bot,
     command_name: str,
 ) -> str:
-    local_command = bot.tree.get_command(command_name)
+    local_command = _find_local_command(bot, command_name)
     if local_command is None:
         return "local command unavailable"
 
@@ -163,40 +179,71 @@ async def _sync_global_chat_input_command(
     else:
         local_payload = await local_command.get_translated_payload(bot.tree, translator)
 
+    expected_type = _local_command_type(local_command)
+
     remote_commands = await bot.tree.fetch_commands()
     remote_command = next(
         (
             command
             for command in remote_commands
             if command.name == command_name
-            and command.type == discord.AppCommandType.chat_input
+            and command.type == expected_type
         ),
         None,
     )
 
-    desired_description = local_payload["description"]
-    desired_options = local_payload.get("options", [])
-    if remote_command is not None:
-        remote_options = [option.to_dict() for option in remote_command.options]
-        if (
-            remote_command.description == desired_description
-            and [_normalize_app_command_option(option) for option in remote_options]
-            == [_normalize_app_command_option(option) for option in desired_options]
-        ):
-            return "already matches"
+    if expected_type == discord.AppCommandType.chat_input:
+        desired_description = local_payload.get("description", "")
+        desired_options = local_payload.get("options", [])
+        if remote_command is not None:
+            remote_options = [option.to_dict() for option in remote_command.options]
+            if (
+                remote_command.description == desired_description
+                and [_normalize_app_command_option(option) for option in remote_options]
+                == [_normalize_app_command_option(option) for option in desired_options]
+            ):
+                return "already matches"
 
-        await bot.http.edit_global_command(
-            bot.application_id,
-            remote_command.id,
-            {
-                "description": desired_description,
-                "options": desired_options,
-            },
-        )
-        return "updated"
+            await bot.http.edit_global_command(
+                bot.application_id,
+                remote_command.id,
+                {
+                    "description": desired_description,
+                    "options": desired_options,
+                },
+            )
+            return "updated"
+    else:
+        if remote_command is not None:
+            return "already matches"
 
     await bot.http.upsert_global_command(bot.application_id, local_payload)
     return "created"
+
+
+def _local_command_type(command: object) -> discord.AppCommandType:
+    return getattr(command, "type", discord.AppCommandType.chat_input)
+
+
+async def _sync_missing_global_commands(bot: commands.Bot) -> dict[str, str]:
+    remote_commands = await bot.tree.fetch_commands()
+    remote_keys = {(command.name, command.type) for command in remote_commands}
+    statuses: dict[str, str] = {}
+    for local_command in bot.tree.get_commands():
+        if (local_command.name, _local_command_type(local_command)) in remote_keys:
+            continue
+        statuses[local_command.name] = await _sync_global_single_command(
+            bot,
+            local_command.name,
+        )
+    return statuses
+
+
+async def _sync_global_chat_input_command(
+    bot: commands.Bot,
+    command_name: str,
+) -> str:
+    return await _sync_global_single_command(bot, command_name)
 
 
 async def _sync_global_commands(
