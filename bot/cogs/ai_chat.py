@@ -106,7 +106,7 @@ class AiChat(commands.Cog):
         self.input_safety_tokens = _env_int("VLLM_INPUT_SAFETY_TOKENS", 256, 32)
         self.rate_limit_cooldown = _env_int("VLLM_RATE_LIMIT_COOLDOWN", 60, 5)
         self.vllm_timeout = _env_float("VLLM_TIMEOUT", 1800.0, 1.0)
-        self.request_timeout = min(self.vllm_timeout, _env_float("VLLM_REQUEST_TIMEOUT", 60.0, 1.0))
+        self.request_timeout = min(self.vllm_timeout, _env_float("VLLM_REQUEST_TIMEOUT", 600.0, 1.0))
         self.request_retries = _env_int("VLLM_REQUEST_RETRIES", 2)
         self.retry_backoff = _env_float("VLLM_RETRY_BACKOFF", 0.8, 0.1)
         self.mention_only = _env_bool("VLLM_MENTION_ONLY", False)
@@ -155,6 +155,7 @@ class AiChat(commands.Cog):
         if self.rag_enabled:
             self._init_rag_store()
 
+        self.output_reviewer_thinking = _env_bool("VLLM_OUTPUT_REVIEWER_THINKING", False)
         self.prompt_budget = PromptBudget(
             self.context_window_tokens, self.input_safety_tokens, self.min_output_tokens,
             _env_int("VLLM_IMAGE_RESERVE_TOKENS", 1536, 256),
@@ -165,6 +166,7 @@ class AiChat(commands.Cog):
             self.client, model=self.model, temperature=self.temperature,
             disable_thinking=self.disable_thinking, timeout=self.request_timeout,
             retries=self.request_retries, retry_backoff=self.retry_backoff, pool=self.llm_pool,
+            output_review_thinking=self.output_reviewer_thinking,
         )
         self.pipeline_config = PipelineConfig(
             system_rules=self.system_prompt,
@@ -176,7 +178,7 @@ class AiChat(commands.Cog):
             review_tool_rounds=min(3, _env_int("VLLM_REVIEW_TOOL_ROUNDS", 1)),
             review_tool_calls=min(6, _env_int("VLLM_REVIEW_TOOL_CALLS", 2)),
             max_revisions=min(1, _env_int("VLLM_MAX_REVISIONS", 1)),
-            turn_timeout=_env_float("VLLM_TURN_TIMEOUT", 120.0, 1.0),
+            turn_timeout=_env_float("VLLM_TURN_TIMEOUT", 600.0, 1.0),
             turn_calls=min(64, _env_int("VLLM_TURN_MAX_CALLS", 16, 1)),
             empty_reply=self.empty_reply_text,
         )

@@ -282,7 +282,7 @@ def chat_factory(monkeypatch):
 def test_existing_endpoint_model_and_variables_preserved_with_bounded_sdk_timeout(chat_factory):
     chat, provider, channel, captured = chat_factory()
     assert chat.vllm_timeout == 2400
-    assert captured == {"api_key": "fake-key", "base_url": "http://mock.invalid/v1", "timeout": 60, "max_retries": 0}
+    assert captured == {"api_key": "fake-key", "base_url": "http://mock.invalid/v1", "timeout": 600, "max_retries": 0}
     assert "保持簡潔\n不可猜測" in chat.system_prompt
     assert chat.model == "existing-model"
     assert not chat.mention_only
@@ -544,7 +544,7 @@ async def test_output_review_failure_prevents_listener_send_and_save(chat_factor
     chat, provider, channel, _ = chat_factory()
     provider.drafts = [draft]
     if failure == "reject":
-        provider.output_verdicts = ["reject"]
+        provider.output_verdicts = ["reject", "reject"]
     elif failure == "tool_call":
         provider.output_tool_calls = [SimpleNamespace(id="output-search", function=SimpleNamespace(
             name="web_search", arguments='{"query":"must not be sent"}'))]
@@ -561,7 +561,8 @@ async def test_output_review_failure_prevents_listener_send_and_save(chat_factor
     provider.before_output_review = lambda: entered.append(True)
     message = make_message(channel)
     await chat.on_message(message)
-    assert entered == [True]
+    retried = failure in {"reject", "invalid_output_review", "corrupt_output_digest"}
+    assert entered == [True] * (2 if retried else 1)
     assert [stage for stage, _, _ in provider.calls[:2]] == ["draft", "review"]
     if failure == "output_review_error":
         assert message.reply.await_count == 1
