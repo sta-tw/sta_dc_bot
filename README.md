@@ -29,8 +29,10 @@ readme by claude
 - `/delete_channel`：刪除機器人建立的頻道。
 - `/assign_roles`：依據 JSON 檔案批次分配身分組（管理員）。
 - `/sync` / `/sync_global`：強制重新同步 Slash 指令（管理員）。
-- Instagram 貼文通知：每 5 分鐘輪詢設定好的公開 Instagram 個人頁面，有新貼文時在指定頻道通知並提及指定身分組，訊息會顯示預覽文字與圖片；領取身分組使用獨立的持久化面板。
-- `/instagram_setup`：用 Slash Command 設定公開 Instagram 帳號、通知頻道與通知身分組。
+- Instagram 貼文通知：每 5 分鐘輪詢設定好的一或多個公開 Instagram 個人頁面，有新貼文時在指定頻道通知並提及指定身分組，訊息會顯示發文帳號、預覽文字與圖片；領取身分組使用獨立的持久化面板。
+- `/instagram_setup`：用 Slash Command 設定通知頻道與通知身分組，並加入公開 Instagram 帳號（多個帳號以逗號分隔，既有帳號會保留）。
+- `/instagram_remove_account`：從通知清單移除指定的公開 Instagram 帳號；清單清空後，Instagram 通知會停用。
+- `/instagram_test`：在目前頻道送出每個帳號最新貼文的測試通知（不提及身分組，不改變已記錄的貼文），用來確認通知格式。
 - `/instagram_role_button`：在目前執行指令的頻道建立獨立的領取「走在時代尖端」身分組面板；不綁定 Instagram 通知頻道。
 
 ### AI 助手
@@ -130,13 +132,13 @@ readme by claude
 /instagram_setup profile_url:https://www.instagram.com/帳號名稱/ channel:#通知頻道 role:@走在時代尖端
 ```
 
-`profile_url` 也可以直接填 Instagram 帳號名稱。此指令需要伺服器管理權限或 `support_role_ids` 內的身分組，並會將設定保存到 Bot 設定檔，立即啟用輪詢。設定完成後，可以在設定的伺服器內任意頻道執行 `/instagram_role_button`，面板會建立在目前執行指令的頻道；Instagram 貼文通知本身不會附帶按鈕，仍會固定發送到 `/instagram_setup` 設定的通知頻道。`/instagram_setup` 目前設定的是單一全域 Instagram 目標；重複執行會更新現有設定。若 `INSTAGRAM_PROFILE_URL` 環境變數有值，會優先於 Slash Command 設定，請先清除該環境變數。
+`profile_url` 也可以直接填 Instagram 帳號名稱；要設定多個帳號時用逗號分隔，例如 `profile_url:帳號A, 帳號B`。此指令需要伺服器管理權限或 `support_role_ids` 內的身分組，並會將設定保存到 Bot 設定檔，立即啟用輪詢。設定完成後，可以在設定的伺服器內任意頻道執行 `/instagram_role_button`，面板會建立在目前執行指令的頻道；Instagram 貼文通知本身不會附帶按鈕，仍會固定發送到 `/instagram_setup` 設定的通知頻道。多個帳號共用同一個通知頻道與身分組，各自獨立輪詢。`/instagram_setup` 會把輸入的帳號加入清單，既有帳號保留；要移除帳號請用 `/instagram_remove_account`。若 `INSTAGRAM_PROFILE_URL` 環境變數有值（同樣可用逗號分隔），會優先於 Slash Command 設定，請先清除該環境變數。
 
 如果 Slash Command 尚未出現，請確認根層 `guild_id` 已設定為目標伺服器 ID 後重啟 Bot，或使用管理員的 `/sync`；全域同步可能需要等待一段時間。
 
 Bot 會每 5 分鐘以不帶登入狀態的單次 HTTP GET 讀取公開 Instagram 個人頁面，解析頁面中公開呈現的貼文連結。**不支援 Instagram 登入、Cookie、私人 API、CAPTCHA、代理輪換或繞過反爬限制**。如果 Instagram 回傳登入頁、401/403 或暫時封鎖，Bot 會略過該次檢查，不會嘗試繞過限制。首次啟動會先記錄目前已存在的貼文，不會一次刷出歷史貼文。
 
-貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`，Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
+貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`（所有帳號共用同一份檔案，各帳號分別記錄是否已完成首次快照）；同一則貼文若同時出現在兩個帳號（合作貼文），只會通知一次。Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
 
 ---
 

@@ -56,6 +56,19 @@ def test_save_llm_disabled_channels_preserves_other_settings(tmp_path):
     assert not list(tmp_path.glob(".*.tmp"))
 
 
+def test_save_llm_disabled_channels_persists_while_editor_holds_file(tmp_path):
+    config_path = tmp_path / "bot.json"
+    _write_bot_config(config_path, {"model": "existing-model"})
+
+    with open(config_path, encoding="utf-8"):
+        saved_channel_ids = save_llm_disabled_channel_ids(config_path, [789])
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_channel_ids == [789]
+    assert data["llm"] == {"model": "existing-model", "disabled_channel_ids": [789]}
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("disabled_channel_ids", "channel_id", "parent_channel_id", "mentioned", "expected_turns"),

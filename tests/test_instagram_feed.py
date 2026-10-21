@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import copy
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import discord
 import pytest
+from discord.ext import commands
 
 from bot.cogs import instagram_feed as instagram_cog
 from bot.utils import instagram_feed as feed
@@ -127,12 +131,14 @@ def make_bot(
     *,
     enabled=True,
     profile_url="",
+    profile_urls=(),
     feed_url="https://feed.example.test/ig.xml",
     settings_path=None,
 ):
     config = SimpleNamespace(
         enabled=enabled,
         profile_url=profile_url,
+        profile_urls=list(profile_urls),
         feed_url=feed_url,
         guild_id=123,
         channel_id=456,
@@ -169,7 +175,7 @@ def test_config_wires_instagram_extension_and_defaults():
     config = json.loads(Path("config/bot.json").read_text(encoding="utf-8"))
 
     assert "bot.cogs.instagram_feed" in config["extensions"]
-    assert "profile_url" in config["instagram_feed"]
+    assert "profile_urls" in config["instagram_feed"] or "profile_url" in config["instagram_feed"]
     assert config["instagram_feed"]["poll_minutes"] == 5
     assert isinstance(config["instagram_feed"]["enabled"], bool)
 
@@ -179,7 +185,11 @@ def test_instagram_commands_are_registered():
         command.name: command
         for command in instagram_cog.InstagramFeed.__cog_app_commands__
     }
-    assert {"instagram_setup", "instagram_role_button"} <= set(commands)
+    assert {"instagram_setup", "instagram_role_button", "instagram_remove_account", "instagram_test"} <= set(commands)
+    assert commands["instagram_test"].parameters == []
+    assert [parameter.name for parameter in commands["instagram_remove_account"].parameters] == [
+        "profile_url",
+    ]
     assert [parameter.name for parameter in commands["instagram_setup"].parameters] == [
         "profile_url",
         "channel",
@@ -286,6 +296,7 @@ def test_save_instagram_configuration_preserves_other_settings(tmp_path):
                 "instagram_feed": {
                     "poll_minutes": 7,
                     "legacy": "keep",
+                    "profile_url": "https://www.instagram.com/old/",
                 },
             }
         ),
@@ -295,7 +306,10 @@ def test_save_instagram_configuration_preserves_other_settings(tmp_path):
     feed.save_instagram_configuration(
         path,
         enabled=True,
-        profile_url="https://www.instagram.com/example/",
+        profile_urls=[
+            "https://www.instagram.com/example/",
+            "https://www.instagram.com/second/",
+        ],
         guild_id=123,
         channel_id=456,
         role_id=789,
@@ -308,11 +322,37 @@ def test_save_instagram_configuration_preserves_other_settings(tmp_path):
         "poll_minutes": 7,
         "legacy": "keep",
         "enabled": True,
-        "profile_url": "https://www.instagram.com/example/",
+        "profile_urls": [
+            "https://www.instagram.com/example/",
+            "https://www.instagram.com/second/",
+        ],
         "guild_id": 123,
         "channel_id": 456,
         "role_id": 789,
     }
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_save_instagram_configuration_persists_while_editor_holds_file(tmp_path):
+    path = tmp_path / "bot.json"
+    path.write_text(
+        json.dumps({"guild_id": 123, "instagram_feed": {"poll_minutes": 7}}),
+        encoding="utf-8",
+    )
+
+    with open(path, encoding="utf-8"):
+        feed.save_instagram_configuration(
+            path,
+            enabled=True,
+            profile_urls=["https://www.instagram.com/example/"],
+            guild_id=123,
+            channel_id=456,
+            role_id=789,
+        )
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["guild_id"] == 123
+    assert data["instagram_feed"]["profile_urls"] == ["https://www.instagram.com/example/"]
     assert not list(tmp_path.glob(".*.tmp"))
 
 
@@ -347,17 +387,402 @@ async def test_instagram_setup_command_persists_and_refreshes_runtime(monkeypatc
 
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["instagram_feed"]["enabled"] is True
-    assert data["instagram_feed"]["profile_url"] == "https://www.instagram.com/spec_talent.tw/"
+    assert data["instagram_feed"]["profile_urls"] == ["https://www.instagram.com/spec_talent.tw/"]
     assert data["instagram_feed"]["guild_id"] == 123
     assert data["instagram_feed"]["channel_id"] == 456
     assert data["instagram_feed"]["role_id"] == 789
     assert data["instagram_feed"]["poll_minutes"] == 7
     assert data["instagram_feed"]["legacy"] == "keep"
     assert notifier.config.enabled is True
-    assert notifier.config.source_url == "https://www.instagram.com/spec_talent.tw/"
+    assert notifier.config.source_urls == ("https://www.instagram.com/spec_talent.tw/",)
     assert notifier.state_path == tmp_path / "states" / "123" / "state.json"
     assert getattr(bot, "_instagram_feed_view_registered", False) is True
     assert "設定完成" in interaction.response.messages[-1][0][0]
+
+
+@pytest.mark.asyncio
+async def test_instagram_setup_saves_two_accounts_and_rejects_bad_input(monkeypatch, tmp_path):
+    config_path = tmp_path / "bot.json"
+    config_path.write_text(
+        json.dumps({"guild_id": 0, "instagram_feed": {"profile_url": "https://www.instagram.com/spec_talent.tw/"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(instagram_cog.ConfigPaths, "INSTAGRAM_FEED_DIR", tmp_path / "states")
+
+    bot = make_bot(settings_path=config_path)
+    notifier = instagram_cog.InstagramFeed(bot, start_task=False)
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    channel = FakeTextChannel(456, guild)
+    interaction = FakeInteraction(guild, FakeMember(manage_guild=True))
+
+    await instagram_cog.InstagramFeed.instagram_setup.callback(
+        notifier,
+        interaction,
+        "spec_talent.tw， https://www.instagram.com/second_account/ spec_talent.tw",
+        channel,
+        role,
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["instagram_feed"]["profile_urls"] == [
+        "https://www.instagram.com/spec_talent.tw/",
+        "https://www.instagram.com/second_account/",
+    ]
+    assert "profile_url" not in data["instagram_feed"]
+    assert notifier.config.source_urls == (
+        "https://www.instagram.com/spec_talent.tw/",
+        "https://www.instagram.com/second_account/",
+    )
+    assert "共 2 個" in interaction.response.messages[-1][0][0]
+    assert "second_account" in interaction.response.messages[-1][0][0]
+
+    saved_before_bad_input = data["instagram_feed"]
+    await instagram_cog.InstagramFeed.instagram_setup.callback(
+        notifier,
+        interaction,
+        "spec_talent.tw, p/ABC123",
+        channel,
+        role,
+    )
+
+    assert "p/ABC123" in interaction.response.messages[-1][0][0]
+    assert json.loads(config_path.read_text(encoding="utf-8"))["instagram_feed"] == saved_before_bad_input
+
+
+@pytest.mark.asyncio
+async def test_instagram_setup_adds_account_without_dropping_existing_ones(monkeypatch, tmp_path):
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    config_path = tmp_path / "bot.json"
+    config_path.write_text(
+        json.dumps({"guild_id": 0, "instagram_feed": {"profile_urls": [first]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(instagram_cog.ConfigPaths, "INSTAGRAM_FEED_DIR", tmp_path / "states")
+
+    bot = make_bot(settings_path=config_path, profile_urls=[first])
+    notifier = instagram_cog.InstagramFeed(bot, start_task=False)
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    channel = FakeTextChannel(456, guild)
+    interaction = FakeInteraction(guild, FakeMember(manage_guild=True))
+
+    await instagram_cog.InstagramFeed.instagram_setup.callback(
+        notifier,
+        interaction,
+        "second_account",
+        channel,
+        role,
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["instagram_feed"]["profile_urls"] == [first, second]
+    assert notifier.config.source_urls == (first, second)
+    assert "共 2 個" in interaction.response.messages[-1][0][0]
+    assert "新加入的帳號" in interaction.response.messages[-1][0][0]
+
+
+@pytest.mark.asyncio
+async def test_instagram_remove_account_keeps_others_and_disables_when_empty(monkeypatch, tmp_path):
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    config_path = tmp_path / "bot.json"
+    config_path.write_text(
+        json.dumps({"guild_id": 0, "instagram_feed": {"profile_urls": [first, second]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(instagram_cog.ConfigPaths, "INSTAGRAM_FEED_DIR", tmp_path / "states")
+
+    bot = make_bot(settings_path=config_path, profile_urls=[first, second])
+    notifier = instagram_cog.InstagramFeed(bot, start_task=False)
+    guild = FakeGuild(FakeRole(789))
+    interaction = FakeInteraction(guild, FakeMember(manage_guild=True))
+
+    await instagram_cog.InstagramFeed.instagram_remove_account.callback(
+        notifier,
+        interaction,
+        "first_account",
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["instagram_feed"]["profile_urls"] == [second]
+    assert data["instagram_feed"]["enabled"] is True
+    assert notifier.config.source_urls == (second,)
+    assert "已移除" in interaction.response.messages[-1][0][0]
+
+    await instagram_cog.InstagramFeed.instagram_remove_account.callback(
+        notifier,
+        interaction,
+        "second_account",
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["instagram_feed"]["profile_urls"] == []
+    assert data["instagram_feed"]["enabled"] is False
+    assert notifier.config.enabled is False
+    assert "已停用" in interaction.response.messages[-1][0][0]
+
+    await instagram_cog.InstagramFeed.instagram_remove_account.callback(
+        notifier,
+        interaction,
+        "first_account",
+    )
+    assert "不在目前的通知清單中" in interaction.response.messages[-1][0][0]
+
+
+@pytest.mark.asyncio
+async def test_readding_removed_account_takes_a_fresh_snapshot(monkeypatch, tmp_path):
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    config_path = tmp_path / "bot.json"
+    config_path.write_text(
+        json.dumps({"guild_id": 0, "instagram_feed": {"profile_urls": [first, second]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(instagram_cog.ConfigPaths, "INSTAGRAM_FEED_DIR", tmp_path / "states")
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    notifications = FakeChannel(guild)
+    bot = make_bot(notifications, settings_path=config_path, profile_urls=[first, second])
+    notifier = instagram_cog.InstagramFeed(bot, start_task=False)
+    pages = {
+        first: b'<a href="/p/F_OLD/">old</a>',
+        second: b'<a href="/p/S_OLD/">old</a>',
+    }
+    monkeypatch.setattr(
+        instagram_cog.feed,
+        "fetch_public_profile",
+        lambda url, **kwargs: pages[url],
+    )
+    interaction = FakeInteraction(guild, FakeMember(manage_guild=True))
+
+    await notifier._poll_once()
+
+    await instagram_cog.InstagramFeed.instagram_remove_account.callback(
+        notifier,
+        interaction,
+        "first_account",
+    )
+    pages[first] = b'<a href="/p/F_GAP/">posted while removed</a><a href="/p/F_OLD/">old</a>'
+    await notifier._poll_once()
+
+    await instagram_cog.InstagramFeed.instagram_setup.callback(
+        notifier,
+        interaction,
+        "first_account",
+        FakeTextChannel(456, guild),
+        role,
+    )
+    await notifier._poll_once()
+
+    assert notifications.messages == []
+    assert notifier.config.source_urls == (second, first)
+
+
+def test_instagram_command_payloads_meet_discord_limits():
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    for command in (
+        instagram_cog.InstagramFeed.instagram_setup,
+        instagram_cog.InstagramFeed.instagram_remove_account,
+        instagram_cog.InstagramFeed.instagram_role_button,
+        instagram_cog.InstagramFeed.instagram_test,
+    ):
+        bot.tree.add_command(command)
+
+    name_pattern = re.compile(r"[a-z0-9_-]{1,32}")
+    payloads = {command.name: command.to_dict(bot.tree) for command in bot.tree.get_commands()}
+
+    assert set(payloads) == {
+        "instagram_setup",
+        "instagram_remove_account",
+        "instagram_role_button",
+        "instagram_test",
+    }
+    for name, payload in payloads.items():
+        assert name_pattern.fullmatch(name), name
+        assert 1 <= len(payload["description"]) <= 100, name
+        for option in payload.get("options", []):
+            assert name_pattern.fullmatch(option["name"]), option["name"]
+            assert 1 <= len(option["description"]) <= 100, option["name"]
+
+
+@pytest.mark.asyncio
+async def test_instagram_commands_refuse_members_without_permission(monkeypatch, tmp_path):
+    config_path = tmp_path / "bot.json"
+    original = {
+        "guild_id": 0,
+        "instagram_feed": {"profile_urls": ["https://www.instagram.com/first_account/"]},
+    }
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(instagram_cog.ConfigPaths, "INSTAGRAM_FEED_DIR", tmp_path / "states")
+
+    bot = make_bot(settings_path=config_path, profile_urls=["https://www.instagram.com/first_account/"])
+    notifier = instagram_cog.InstagramFeed(bot, start_task=False)
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    interaction = FakeInteraction(guild, FakeMember())
+
+    await instagram_cog.InstagramFeed.instagram_remove_account.callback(
+        notifier,
+        interaction,
+        "first_account",
+    )
+    assert "需要伺服器管理權限" in interaction.response.messages[-1][0][0]
+
+    await instagram_cog.InstagramFeed.instagram_setup.callback(
+        notifier,
+        interaction,
+        "second_account",
+        FakeTextChannel(456, guild),
+        role,
+    )
+    assert "需要伺服器管理權限" in interaction.response.messages[-1][0][0]
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == original
+
+
+@pytest.mark.asyncio
+async def test_old_post_still_on_a_profile_is_not_announced_after_a_prune(monkeypatch, tmp_path):
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    role = FakeRole(789)
+    channel = FakeChannel(FakeGuild(role))
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(channel, profile_urls=[first, second]),
+        start_task=False,
+    )
+    notifier.state_path = tmp_path / "state.json"
+    notifier.state = feed.load_state(notifier.state_path)
+    pages = {
+        first: b'<a href="/p/F_OLD/">old</a>',
+        second: b'<a href="/p/S_OLD/">old</a>',
+    }
+    monkeypatch.setattr(
+        instagram_cog.feed,
+        "fetch_public_profile",
+        lambda url, **kwargs: pages[url],
+    )
+
+    await notifier._poll_once()
+    notifier.state["seen"]["https://www.instagram.com/p/F_OLD"] = (
+        datetime.now(timezone.utc) - timedelta(days=40)
+    ).isoformat()
+
+    pages[second] = b'<a href="/p/S_NEW/">new</a><a href="/p/S_OLD/">old</a>'
+    await notifier._poll_once()
+    await notifier._poll_once()
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/S_NEW/",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_instagram_test_sends_latest_post_per_account_without_mentions(monkeypatch, tmp_path):
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    channel = FakeChannel(guild)
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(channel, profile_urls=[first, second]),
+        start_task=False,
+    )
+    notifier.state_path = tmp_path / "state.json"
+    notifier.state = feed.load_state(notifier.state_path)
+    pages = {
+        first: b'<a href="/p/F_NEW/">new</a><a href="/p/F_OLD/">old</a>',
+        second: b'<a href="/p/S_NEW/">new</a>',
+    }
+    monkeypatch.setattr(
+        instagram_cog.feed,
+        "fetch_public_profile",
+        lambda url, **kwargs: pages[url],
+    )
+    state_before = copy.deepcopy(notifier.state)
+    interaction = FakeInteraction(guild, FakeMember(manage_guild=True), channel=channel)
+
+    await instagram_cog.InstagramFeed.instagram_test.callback(notifier, interaction)
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/F_NEW/",
+        "https://www.instagram.com/p/S_NEW/",
+    ]
+    assert [message["embed"].author.name for message in channel.messages] == [
+        "@first_account",
+        "@second_account",
+    ]
+    for message in channel.messages:
+        assert message["content"].startswith("【測試】")
+        assert "<@&" not in message["content"]
+        assert message["allowed_mentions"].roles is False
+    assert notifier.state == state_before
+    assert "已在目前頻道送出 2 則" in interaction.followup.messages[-1][0][0]
+
+
+@pytest.mark.asyncio
+async def test_instagram_test_reports_accounts_it_could_not_read(monkeypatch, tmp_path):
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    channel = FakeChannel(guild)
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(channel, profile_urls=[first, second]),
+        start_task=False,
+    )
+    notifier.state_path = tmp_path / "state.json"
+    notifier.state = feed.load_state(notifier.state_path)
+
+    def fake_fetch(url, **kwargs):
+        if url == first:
+            raise OSError("temporarily blocked")
+        return b'<a href="/p/S_NEW/">new</a>'
+
+    monkeypatch.setattr(instagram_cog.feed, "fetch_public_profile", fake_fetch)
+    interaction = FakeInteraction(guild, FakeMember(manage_guild=True), channel=channel)
+
+    await instagram_cog.InstagramFeed.instagram_test.callback(notifier, interaction)
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/S_NEW/",
+    ]
+    summary = interaction.followup.messages[-1][0][0]
+    assert "已在目前頻道送出 1 則" in summary
+    assert f"{first}：讀取失敗" in summary
+
+
+@pytest.mark.asyncio
+async def test_instagram_test_refuses_members_without_permission(tmp_path):
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    channel = FakeChannel(guild)
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(channel, profile_urls=["https://www.instagram.com/first_account/"]),
+        start_task=False,
+    )
+    interaction = FakeInteraction(guild, FakeMember(), channel=channel)
+
+    await instagram_cog.InstagramFeed.instagram_test.callback(notifier, interaction)
+
+    assert channel.messages == []
+    assert "需要伺服器管理權限" in interaction.response.messages[-1][0][0]
+
+
+@pytest.mark.asyncio
+async def test_instagram_role_button_refuses_members_without_permission(tmp_path):
+    role = FakeRole(789)
+    guild = FakeGuild(role)
+    channel = FakeChannel(guild)
+    bot = make_bot(channel, profile_url="example", settings_path=tmp_path / "bot.json")
+    notifier = instagram_cog.InstagramFeed(bot, start_task=False)
+    interaction = FakeInteraction(guild, FakeMember(), channel_id=999, channel=channel)
+
+    await instagram_cog.InstagramFeed.instagram_role_button.callback(notifier, interaction)
+
+    assert channel.messages == []
+    assert "需要伺服器管理權限" in interaction.response.messages[-1][0][0]
 
 
 @pytest.mark.asyncio
@@ -400,8 +825,14 @@ def test_feed_parser_rejects_invalid_items_and_urls():
 
 def test_state_round_trip_and_corrupt_file(tmp_path):
     path = tmp_path / "state.json"
-    state = feed.empty_state("https://feed.example.test/ig.xml")
-    state["initialized"] = True
+    state = feed.empty_state()
+    state["accounts"] = {
+        "https://www.instagram.com/example/": {
+            "initialized": True,
+            "watermark": "2026-09-21T10:00:00+00:00",
+            "visible": [],
+        }
+    }
     state["seen"] = {"https://www.instagram.com/p/ABC": "2026-09-21T10:00:00+00:00"}
     feed.save_state(path, state)
 
@@ -409,6 +840,82 @@ def test_state_round_trip_and_corrupt_file(tmp_path):
     path.write_text("not json", encoding="utf-8")
     assert feed.load_state(path) == feed.empty_state()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_schema_one_state_is_migrated_to_account_map(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_url": "https://www.instagram.com/spec_talent.tw/",
+                "initialized": True,
+                "watermark": "2026-10-11T08:53:38+00:00",
+                "seen": {"https://www.instagram.com/p/ABC": "2026-10-11T08:53:38+00:00"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = feed.load_state(path)
+
+    assert state["accounts"] == {
+        "https://www.instagram.com/spec_talent.tw/": {
+            "initialized": True,
+            "watermark": "2026-10-11T08:53:38+00:00",
+            "visible": [],
+        }
+    }
+    assert state["seen"] == {"https://www.instagram.com/p/ABC": "2026-10-11T08:53:38+00:00"}
+
+
+def test_prune_keeps_visible_posts_and_drops_stale_ones():
+    now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    old = (now - timedelta(days=40)).isoformat()
+    visible = "https://www.instagram.com/p/VISIBLE"
+    state = feed.empty_state()
+    state["seen"] = {
+        visible: old,
+        "https://www.instagram.com/p/GONE": old,
+        "https://www.instagram.com/p/FRESH": now.isoformat(),
+    }
+
+    feed.prune_seen(state, retention_days=30, now=now, keep={visible})
+
+    assert set(state["seen"]) == {visible, "https://www.instagram.com/p/FRESH"}
+
+
+@pytest.mark.asyncio
+async def test_schema_one_state_is_adopted_without_reseeding(monkeypatch, tmp_path):
+    role = FakeRole(789)
+    channel = FakeChannel(FakeGuild(role))
+    notifier = make_notifier(tmp_path, channel)
+    notifier.state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_url": notifier.config.source_url,
+                "initialized": True,
+                "watermark": None,
+                "seen": {"https://www.instagram.com/p/OLD": "2026-10-11T08:00:00+00:00"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    notifier.state = feed.load_state(notifier.state_path)
+    payload = RSS_TEMPLATE.format(
+        items=(
+            rss_item("https://www.instagram.com/p/NEW/", "新貼文", "Mon, 21 Sep 2026 11:00:00 GMT")
+            + rss_item("https://www.instagram.com/p/OLD/", "舊貼文")
+        )
+    ).encode()
+    monkeypatch.setattr(instagram_cog.feed, "fetch_feed", lambda *args, **kwargs: payload)
+
+    await notifier._poll_once()
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/NEW/",
+    ]
 
 
 @pytest.mark.asyncio
@@ -452,8 +959,8 @@ async def test_posts_are_sent_oldest_first(monkeypatch, tmp_path):
     role = FakeRole(789)
     channel = FakeChannel(FakeGuild(role))
     notifier = make_notifier(tmp_path, channel)
-    notifier.state = feed.empty_state(notifier.config.feed_url)
-    notifier.state["initialized"] = True
+    notifier.state = feed.empty_state()
+    notifier.state["accounts"][notifier.config.source_url] = {"initialized": True, "watermark": None}
 
     payload = RSS_TEMPLATE.format(
         items=(
@@ -562,3 +1069,154 @@ async def test_persistent_view_is_registered_once():
     assert setup_persistent_views_instagram(bot) is True
     assert len(registered) == 1
     assert isinstance(registered[0], InstagramFeedRoleView)
+
+
+def test_profile_list_accepts_common_separators_and_reports_invalid_entries():
+    profile_urls, invalid_entries = feed.parse_instagram_profile_list(
+        "spec_talent.tw, https://www.instagram.com/second_account/ 、@spec_talent.tw，another.one p/ABC123"
+    )
+
+    assert profile_urls == [
+        "https://www.instagram.com/spec_talent.tw/",
+        "https://www.instagram.com/second_account/",
+        "https://www.instagram.com/another.one/",
+    ]
+    assert invalid_entries == ["p/ABC123"]
+
+
+def test_env_profile_urls_accept_several_accounts(monkeypatch):
+    monkeypatch.setenv("INSTAGRAM_PROFILE_URL", "first_account, second_account")
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(profile_urls=["https://www.instagram.com/configured/"]),
+        start_task=False,
+    )
+
+    assert notifier.config.source_urls == (
+        "https://www.instagram.com/first_account/",
+        "https://www.instagram.com/second_account/",
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_accounts_share_channel_and_announce_collab_posts_once(monkeypatch, tmp_path):
+    role = FakeRole(789)
+    channel = FakeChannel(FakeGuild(role))
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(channel, profile_urls=[first, second]),
+        start_task=False,
+    )
+    notifier.state_path = tmp_path / "state.json"
+    notifier.state = feed.load_state(notifier.state_path)
+    pages = {
+        first: b'<a href="/p/F_OLD/">old</a>',
+        second: b'<a href="/p/S_OLD/">old</a>',
+    }
+    monkeypatch.setattr(
+        instagram_cog.feed,
+        "fetch_public_profile",
+        lambda url, **kwargs: pages[url],
+    )
+
+    await notifier._poll_once()
+    assert channel.messages == []
+
+    pages[first] = (
+        b'<a href="/p/F_NEW/">new</a><a href="/p/COLLAB/">collab</a><a href="/p/F_OLD/">old</a>'
+    )
+    pages[second] = (
+        b'<a href="/p/S_NEW/">new</a><a href="/p/COLLAB/">collab</a><a href="/p/S_OLD/">old</a>'
+    )
+    await notifier._poll_once()
+
+    authors = {message["embed"].url: message["embed"].author.name for message in channel.messages}
+    assert authors == {
+        "https://www.instagram.com/p/F_NEW/": "@first_account",
+        "https://www.instagram.com/p/COLLAB/": "@first_account",
+        "https://www.instagram.com/p/S_NEW/": "@second_account",
+    }
+    assert len(channel.messages) == 3
+
+    await notifier._poll_once()
+    assert len(channel.messages) == 3
+    assert notifier.state["accounts"][first]["initialized"] is True
+    assert notifier.state["accounts"][second]["initialized"] is True
+
+
+@pytest.mark.asyncio
+async def test_failing_account_does_not_block_the_other(monkeypatch, tmp_path):
+    role = FakeRole(789)
+    channel = FakeChannel(FakeGuild(role))
+    first = "https://www.instagram.com/first_account/"
+    second = "https://www.instagram.com/second_account/"
+    notifier = instagram_cog.InstagramFeed(
+        make_bot(channel, profile_urls=[first, second]),
+        start_task=False,
+    )
+    notifier.state_path = tmp_path / "state.json"
+    notifier.state = feed.load_state(notifier.state_path)
+    pages = {
+        first: b'<a href="/p/F_OLD/">old</a>',
+        second: b'<a href="/p/S_OLD/">old</a>',
+    }
+    blocked: set[str] = set()
+
+    def fake_fetch(url, **kwargs):
+        if url in blocked:
+            raise OSError("temporarily blocked")
+        return pages[url]
+
+    monkeypatch.setattr(instagram_cog.feed, "fetch_public_profile", fake_fetch)
+
+    await notifier._poll_once()
+    first_before = dict(notifier.state["accounts"][first])
+
+    blocked.add(first)
+    pages[first] = b'<a href="/p/F_NEW/">new</a><a href="/p/F_OLD/">old</a>'
+    pages[second] = b'<a href="/p/S_NEW/">new</a><a href="/p/S_OLD/">old</a>'
+    await notifier._poll_once()
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/S_NEW/",
+    ]
+    assert notifier.state["accounts"][first] == first_before
+
+    blocked.clear()
+    await notifier._poll_once()
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/S_NEW/",
+        "https://www.instagram.com/p/F_NEW/",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_every_post_from_one_poll_is_remembered(monkeypatch, tmp_path):
+    role = FakeRole(789)
+    channel = FakeChannel(FakeGuild(role))
+    notifier = make_notifier(tmp_path, channel)
+    seed_payload = RSS_TEMPLATE.format(
+        items=rss_item("https://www.instagram.com/p/OLD/", "舊貼文")
+    ).encode()
+    burst_payload = RSS_TEMPLATE.format(
+        items=(
+            rss_item("https://www.instagram.com/p/A/", "甲", "Mon, 21 Sep 2026 11:00:00 GMT")
+            + rss_item("https://www.instagram.com/p/B/", "乙", "Mon, 21 Sep 2026 11:01:00 GMT")
+            + rss_item("https://www.instagram.com/p/OLD/", "舊貼文")
+        )
+    ).encode()
+    payloads = [seed_payload, burst_payload, burst_payload]
+    monkeypatch.setattr(instagram_cog.feed, "fetch_feed", lambda *args, **kwargs: payloads.pop(0))
+
+    await notifier._poll_once()
+    await notifier._poll_once()
+    await notifier._poll_once()
+
+    assert [message["embed"].url for message in channel.messages] == [
+        "https://www.instagram.com/p/A/",
+        "https://www.instagram.com/p/B/",
+    ]
+    assert {"https://www.instagram.com/p/A", "https://www.instagram.com/p/B"} <= set(
+        notifier.state["seen"]
+    )

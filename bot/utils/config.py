@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,7 @@ class InstagramFeedConfig:
 
     enabled: bool = False
     profile_url: str = ""
+    profile_urls: list[str] = field(default_factory=list)
     feed_url: str = ""
     guild_id: int = 0
     channel_id: int = 0
@@ -141,9 +143,15 @@ class Settings:
         instagram_enabled = instagram_data.get("enabled", False)
         if isinstance(instagram_enabled, str):
             instagram_enabled = instagram_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        raw_profile_urls = instagram_data.get("profile_urls")
+        if isinstance(raw_profile_urls, str):
+            raw_profile_urls = [raw_profile_urls]
+        if not isinstance(raw_profile_urls, list):
+            raw_profile_urls = []
         instagram_feed = InstagramFeedConfig(
             enabled=bool(instagram_enabled),
             profile_url=str(instagram_data.get("profile_url", "") or "").strip(),
+            profile_urls=[url.strip() for url in raw_profile_urls if isinstance(url, str) and url.strip()],
             feed_url=str(instagram_data.get("feed_url", "") or "").strip(),
             guild_id=int(instagram_data.get("guild_id", 0) or 0),
             channel_id=int(instagram_data.get("channel_id", 0) or 0),
@@ -210,6 +218,30 @@ def get_env_or_default(name: str, default: str = "") -> str:
     return result if result and result.strip() else default
 
 
+_logger = logging.getLogger(__name__)
+
+
+def write_config_text(path: Path, text: str) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary_path.write_text(text, encoding="utf-8")
+        try:
+            os.replace(temporary_path, path)
+        except PermissionError:
+            _logger.warning(
+                "[Config] %s 正被其他程式開啟，已改為直接寫入；編輯器中的舊內容請重新載入",
+                path,
+            )
+            path.write_text(text, encoding="utf-8")
+    finally:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+
+
 def save_llm_disabled_channel_ids(path: Path, channel_ids: Iterable[int]) -> list[int]:
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -228,17 +260,5 @@ def save_llm_disabled_channel_ids(path: Path, channel_ids: Iterable[int]) -> lis
     llm_settings["disabled_channel_ids"] = disabled_channel_ids
     data["llm"] = llm_settings
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary_path, path)
-    finally:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
+    write_config_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return disabled_channel_ids

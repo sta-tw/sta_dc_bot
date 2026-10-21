@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ DEFAULT_RETENTION_DAYS = 30
 @dataclass(frozen=True, slots=True)
 class InstagramRuntimeConfig:
     enabled: bool
-    source_url: str
+    source_urls: tuple[str, ...]
     source_kind: str
     guild_id: int
     channel_id: int
@@ -37,6 +38,10 @@ class InstagramRuntimeConfig:
     state_path: Path
 
     @property
+    def source_url(self) -> str:
+        return self.source_urls[0] if self.source_urls else ""
+
+    @property
     def feed_url(self) -> str:
         """Backward-compatible alias for older local test/config code."""
 
@@ -47,14 +52,19 @@ class InstagramRuntimeConfig:
         settings = getattr(bot, "settings", None)
         configured = getattr(settings, "instagram_feed", None)
 
-        profile_url = _env_text("INSTAGRAM_PROFILE_URL") or str(
-            getattr(configured, "profile_url", "") or ""
-        ).strip()
-        legacy_feed_url = _env_text("INSTAGRAM_FEED_URL") or str(
-            getattr(configured, "feed_url", "") or ""
-        ).strip()
-        source_url = feed.normalise_instagram_profile_url(profile_url) if profile_url else legacy_feed_url
-        source_kind = "profile" if feed.is_valid_instagram_profile_url(source_url) else "feed"
+        env_profile_text = _env_text("INSTAGRAM_PROFILE_URL")
+        profile_urls = _normalise_profile_values(
+            [env_profile_text] if env_profile_text else _configured_profile_values(configured)
+        )
+        if profile_urls:
+            source_urls = profile_urls
+            source_kind = "profile"
+        else:
+            legacy_feed_url = _env_text("INSTAGRAM_FEED_URL") or str(
+                getattr(configured, "feed_url", "") or ""
+            ).strip()
+            source_urls = tuple(url for url in (legacy_feed_url,) if feed.is_valid_feed_url(url))
+            source_kind = "feed"
         guild_id = _int_value(getattr(configured, "guild_id", 0), 0)
         channel_id = _int_value(getattr(configured, "channel_id", 0), 0)
         role_id = _int_value(getattr(configured, "role_id", 0), 0)
@@ -70,12 +80,12 @@ class InstagramRuntimeConfig:
         scope_id = guild_id or channel_id or _int_value(getattr(settings, "guild_id", 0), 0)
         state_path = ConfigPaths.instagram_feed_state(scope_id)
         enabled = bool(getattr(configured, "enabled", False)) and bool(
-            source_url and channel_id and role_id and feed.is_valid_feed_url(source_url)
+            source_urls and channel_id and role_id
         )
 
         return cls(
             enabled=enabled,
-            source_url=source_url,
+            source_urls=source_urls,
             source_kind=source_kind,
             guild_id=guild_id,
             channel_id=channel_id,
@@ -125,7 +135,7 @@ class InstagramFeed(commands.Cog):
         description="設定 Instagram 貼文通知的公開帳號、頻道與身分組",
     )
     @app_commands.describe(
-        profile_url="Instagram 公開個人頁面網址或帳號名稱",
+        profile_url="Instagram 公開帳號網址或名稱，多個請用逗號分隔（會加入目前清單）",
         channel="發送 Instagram 通知的文字頻道",
         role="通知時要提及、也可讓成員領取的身分組",
     )
@@ -146,10 +156,11 @@ class InstagramFeed(commands.Cog):
             )
             return
 
-        normalised_profile_url = feed.normalise_instagram_profile_url(profile_url)
-        if not feed.is_valid_instagram_profile_url(normalised_profile_url):
+        new_profile_urls, invalid_entries = feed.parse_instagram_profile_list(profile_url)
+        if not new_profile_urls or invalid_entries:
+            hint = f"（無法辨識：{'、'.join(invalid_entries)}）" if invalid_entries else ""
             await interaction.response.send_message(
-                "請提供有效的 Instagram 公開個人頁面網址或帳號名稱。",
+                f"請提供有效的 Instagram 公開個人頁面網址或帳號名稱，多個帳號請用逗號分隔。{hint}",
                 ephemeral=True,
             )
             return
@@ -181,9 +192,7 @@ class InstagramFeed(commands.Cog):
             )
             return
 
-        settings_path = getattr(self.bot, "settings_path", None)
-        if settings_path is None:
-            settings_path = getattr(getattr(self.bot, "settings", None), "config_path", None)
+        settings_path = self._settings_path()
         if settings_path is None:
             await interaction.response.send_message(
                 "找不到 Bot 設定檔路徑，無法儲存 Instagram 設定。",
@@ -191,11 +200,23 @@ class InstagramFeed(commands.Cog):
             )
             return
 
+        configured = getattr(getattr(self.bot, "settings", None), "instagram_feed", None)
+        if configured is None:
+            await interaction.response.send_message(
+                "目前執行中的 Bot 缺少 Instagram 設定物件，請重啟 Bot 後再試。",
+                ephemeral=True,
+            )
+            return
+
+        existing_urls = _normalise_profile_values(_configured_profile_values(configured))
+        profile_urls = _normalise_profile_values([*existing_urls, *new_profile_urls])
+        added_urls = [url for url in profile_urls if url not in existing_urls]
+
         try:
             feed.save_instagram_configuration(
                 settings_path,
                 enabled=True,
-                profile_url=normalised_profile_url,
+                profile_urls=profile_urls,
                 guild_id=guild_id,
                 channel_id=channel.id,
                 role_id=role.id,
@@ -208,31 +229,191 @@ class InstagramFeed(commands.Cog):
             )
             return
 
-        configured = getattr(getattr(self.bot, "settings", None), "instagram_feed", None)
-        if configured is None:
-            await interaction.response.send_message(
-                "設定已寫入檔案，但目前執行中的 Bot 缺少 Instagram 設定物件，請重啟 Bot。",
-                ephemeral=True,
-            )
-            return
-
         configured.enabled = True
-        configured.profile_url = normalised_profile_url
+        configured.profile_url = ""
+        configured.profile_urls = list(profile_urls)
         configured.guild_id = guild_id
         configured.channel_id = channel.id
         configured.role_id = role.id
         self._refresh_runtime_config()
         setup_persistent_views_instagram(self.bot)
 
+        accounts_text = "".join(f"\n・{url}" for url in profile_urls)
+        added_note = "\n新加入的帳號會先記錄現有貼文，之後的新貼文才會通知。" if added_urls else ""
         await interaction.response.send_message(
             "Instagram 通知設定完成："
-            f"\n帳號：{normalised_profile_url}"
+            f"\n帳號（共 {len(profile_urls)} 個）：{accounts_text}"
             f"\n頻道：{channel.mention}"
             f"\n身分組：{role.mention}"
             "\n已啟用輪詢（目前間隔預設為 5 分鐘）。"
+            f"{added_note}"
             "\n接著可使用 /instagram_role_button 建立獨立的領取身分組面板。",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="instagram_remove_account",
+        description="從 Instagram 貼文通知清單移除帳號",
+    )
+    @app_commands.describe(
+        profile_url="要移除的 Instagram 帳號網址或名稱，多個請用逗號分隔",
+    )
+    async def instagram_remove_account(
+        self,
+        interaction: discord.Interaction,
+        profile_url: str,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("請在伺服器內使用此指令。", ephemeral=True)
+            return
+        if not self._can_run_test(interaction):
+            await interaction.response.send_message(
+                "需要伺服器管理權限或客服身分組。",
+                ephemeral=True,
+            )
+            return
+        if not self.config.channel_id or not self.config.role_id:
+            await interaction.response.send_message(
+                "Instagram 尚未完成設定，請先使用 /instagram_setup。",
+                ephemeral=True,
+            )
+            return
+        if self.config.guild_id and interaction.guild.id != self.config.guild_id:
+            await interaction.response.send_message(
+                "請在 Instagram 設定的伺服器內使用這個指令。",
+                ephemeral=True,
+            )
+            return
+
+        removed_urls, invalid_entries = feed.parse_instagram_profile_list(profile_url)
+        if not removed_urls or invalid_entries:
+            hint = f"（無法辨識：{'、'.join(invalid_entries)}）" if invalid_entries else ""
+            await interaction.response.send_message(
+                f"請提供要移除的 Instagram 帳號網址或名稱，多個帳號請用逗號分隔。{hint}",
+                ephemeral=True,
+            )
+            return
+        if _env_text("INSTAGRAM_PROFILE_URL"):
+            await interaction.response.send_message(
+                "目前設定了 INSTAGRAM_PROFILE_URL 環境變數，會覆蓋 Slash Command 設定；請先清除後再使用此指令。",
+                ephemeral=True,
+            )
+            return
+
+        configured = getattr(getattr(self.bot, "settings", None), "instagram_feed", None)
+        settings_path = self._settings_path()
+        if configured is None or settings_path is None:
+            await interaction.response.send_message(
+                "找不到 Bot 設定或設定檔路徑，無法更新 Instagram 帳號清單。",
+                ephemeral=True,
+            )
+            return
+
+        current_urls = _normalise_profile_values(_configured_profile_values(configured))
+        remaining_urls = tuple(url for url in current_urls if url not in removed_urls)
+        if len(remaining_urls) == len(current_urls):
+            await interaction.response.send_message(
+                "這些帳號不在目前的通知清單中。",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            feed.save_instagram_configuration(
+                settings_path,
+                enabled=bool(remaining_urls),
+                profile_urls=remaining_urls,
+                guild_id=self.config.guild_id,
+                channel_id=self.config.channel_id,
+                role_id=self.config.role_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            self._logger.warning("[InstagramFeed] 儲存移除帳號設定失敗：%s", exc)
+            await interaction.response.send_message(
+                f"儲存 Instagram 設定失敗：{exc}",
+                ephemeral=True,
+            )
+            return
+
+        accounts = self.state.get("accounts")
+        if isinstance(accounts, dict):
+            for source_url in current_urls:
+                if source_url in removed_urls:
+                    accounts.pop(source_url, None)
+            await self._save_state()
+
+        configured.enabled = bool(remaining_urls)
+        configured.profile_url = ""
+        configured.profile_urls = list(remaining_urls)
+        self._refresh_runtime_config()
+
+        if remaining_urls:
+            accounts_text = "".join(f"\n・{url}" for url in remaining_urls)
+            detail = f"剩餘帳號（共 {len(remaining_urls)} 個）：{accounts_text}"
+        else:
+            detail = "目前沒有任何通知帳號，Instagram 貼文通知已停用。"
+        await interaction.response.send_message(f"已移除 Instagram 帳號。\n{detail}", ephemeral=True)
+
+    @app_commands.command(
+        name="instagram_test",
+        description="在目前頻道送出 Instagram 通知測試（不提及身分組）",
+    )
+    async def instagram_test(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("請在伺服器內使用此指令。", ephemeral=True)
+            return
+        if not self._can_run_test(interaction):
+            await interaction.response.send_message(
+                "需要伺服器管理權限或客服身分組。",
+                ephemeral=True,
+            )
+            return
+        if not self.config.source_urls:
+            await interaction.response.send_message(
+                "Instagram 尚未設定帳號，請先使用 /instagram_setup。",
+                ephemeral=True,
+            )
+            return
+        if self.config.guild_id and interaction.guild.id != self.config.guild_id:
+            await interaction.response.send_message(
+                "請在 Instagram 設定的伺服器內使用這個指令。",
+                ephemeral=True,
+            )
+            return
+        channel = getattr(interaction, "channel", None)
+        if channel is None or not callable(getattr(channel, "send", None)):
+            await interaction.response.send_message(
+                "目前頻道無法發送測試通知。",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        sent_count = 0
+        problems: list[str] = []
+        for source_url in self.config.source_urls:
+            try:
+                posts = await self._fetch_posts(source_url)
+            except Exception as exc:
+                problems.append(f"{source_url}：讀取失敗（{exc}）")
+                continue
+            if not posts:
+                problems.append(f"{source_url}：目前沒有可讀取的貼文")
+                continue
+            post = posts[0]
+            try:
+                await channel.send(
+                    content=f"【測試】Instagram 通知測試，不提及身分組\n{post.link}",
+                    embed=self._build_post_embed(post, source_url),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException as exc:
+                problems.append(f"{source_url}：發送失敗（{exc}）")
+                continue
+            sent_count += 1
+
+        lines = [f"已在目前頻道送出 {sent_count} 則測試通知。", *(f"・{problem}" for problem in problems)]
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @app_commands.command(
         name="instagram_role_button",
@@ -297,6 +478,12 @@ class InstagramFeed(commands.Cog):
             ephemeral=True,
         )
 
+    def _settings_path(self) -> Path | None:
+        settings_path = getattr(self.bot, "settings_path", None)
+        if settings_path is None:
+            settings_path = getattr(getattr(self.bot, "settings", None), "config_path", None)
+        return settings_path
+
     def _can_run_test(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
         permissions = getattr(member, "guild_permissions", None)
@@ -340,67 +527,87 @@ class InstagramFeed(commands.Cog):
             )
             return
 
+        for source_url in self.config.source_urls:
+            await self._poll_source(channel, source_url)
+
+    async def _poll_source(self, channel, source_url: str) -> None:
         try:
-            posts = await self._fetch_posts()
+            posts = await self._fetch_posts(source_url)
         except Exception as exc:
-            self._logger.warning("[InstagramFeed] 讀取公開 Instagram 頁面失敗：%s", exc)
+            self._logger.warning(
+                "[InstagramFeed] 讀取公開 Instagram 頁面失敗（%s）：%s",
+                source_url,
+                exc,
+            )
             return
 
-        if self.state.get("source_url") not in {"", self.config.source_url}:
-            self.state = feed.empty_state(self.config.source_url)
-        self.state["source_url"] = self.config.source_url
-
-        if not self.state.get("initialized"):
-            await self._mark_snapshot_seen(posts)
+        account = self._account_state(source_url)
+        if posts:
+            account["visible"] = [post.source_key for post in posts]
+        if not account.get("initialized"):
+            await self._mark_snapshot_seen(source_url, posts)
             return
 
-        seen = self.state.get("seen", {})
-        if not isinstance(seen, dict):
-            seen = {}
-            self.state["seen"] = seen
-
+        seen = self.state.setdefault("seen", {})
         new_posts = [post for post in posts if post.source_key not in seen]
         new_posts.sort(key=_post_sort_key)
 
         for post in new_posts:
-            if not await self._notify(channel, post):
+            if not await self._notify(channel, post, source_url):
                 break
 
-            seen[post.source_key] = _now_iso()
-            self.state["watermark"] = _now_iso()
-            feed.prune_seen(self.state, retention_days=self.config.retention_days)
+            now = _now_iso()
+            seen[post.source_key] = now
+            account["watermark"] = now
+            feed.prune_seen(
+                self.state,
+                retention_days=self.config.retention_days,
+                keep=self._visible_keys(),
+            )
             await self._save_state()
 
-    async def _fetch_posts(self) -> list[feed.InstagramPost]:
+    async def _fetch_posts(self, source_url: str) -> list[feed.InstagramPost]:
         if self.config.source_kind == "profile":
             payload = await asyncio.to_thread(
                 feed.fetch_public_profile,
-                self.config.source_url,
+                source_url,
                 timeout=self.config.timeout_seconds,
                 user_agent=self.config.user_agent,
             )
-            return feed.parse_public_profile(payload, self.config.source_url)
+            return feed.parse_public_profile(payload, source_url)
 
         payload = await asyncio.to_thread(
             feed.fetch_feed,
-            self.config.source_url,
+            source_url,
             timeout=self.config.timeout_seconds,
             user_agent=self.config.user_agent,
         )
         return feed.parse_feed(payload)
 
-    async def _mark_snapshot_seen(self, posts: list[feed.InstagramPost]) -> None:
-        if self.state.get("source_url") not in {"", self.config.source_url}:
-            self.state = feed.empty_state(self.config.source_url)
-        self.state["source_url"] = self.config.source_url
+    def _account_state(self, source_url: str) -> dict[str, object]:
+        accounts = self.state.setdefault("accounts", {})
+        return accounts.setdefault(
+            source_url,
+            {"initialized": False, "watermark": None, "visible": []},
+        )
+
+    def _visible_keys(self) -> set[str]:
+        accounts = self.state.get("accounts", {})
+        return {key for account in accounts.values() for key in account.get("visible", [])}
+
+    async def _mark_snapshot_seen(self, source_url: str, posts: list[feed.InstagramPost]) -> None:
         timestamp = _now_iso()
         seen = self.state.setdefault("seen", {})
-        if isinstance(seen, dict):
-            for post in posts:
-                seen[post.source_key] = timestamp
-        self.state["initialized"] = True
-        self.state["watermark"] = timestamp
-        feed.prune_seen(self.state, retention_days=self.config.retention_days)
+        for post in posts:
+            seen[post.source_key] = timestamp
+        account = self._account_state(source_url)
+        account["initialized"] = True
+        account["watermark"] = timestamp
+        feed.prune_seen(
+            self.state,
+            retention_days=self.config.retention_days,
+            keep=self._visible_keys(),
+        )
         await self._save_state()
 
     async def _get_notification_channel(self):
@@ -417,7 +624,7 @@ class InstagramFeed(commands.Cog):
             self._logger.warning("[InstagramFeed] 取得通知頻道失敗：%s", exc)
             return None
 
-    def _build_post_embed(self, post: feed.InstagramPost) -> discord.Embed:
+    def _build_post_embed(self, post: feed.InstagramPost, source_url: str) -> discord.Embed:
         preview_text = post.preview_text or post.title or "點擊標題查看 Instagram 貼文。"
         embed = discord.Embed(
             title=(post.title or "Instagram 新貼文")[:256],
@@ -425,11 +632,14 @@ class InstagramFeed(commands.Cog):
             description=preview_text[:4096],
             color=discord.Color.purple(),
         )
+        username = feed.instagram_username_from_profile_url(source_url)
+        if username:
+            embed.set_author(name=f"@{username}", url=source_url)
         if post.thumbnail_url:
             embed.set_image(url=post.thumbnail_url)
         return embed
 
-    async def _notify(self, channel, post: feed.InstagramPost) -> bool:
+    async def _notify(self, channel, post: feed.InstagramPost, source_url: str) -> bool:
         guild = getattr(channel, "guild", None)
         role = None
         if guild is not None and hasattr(guild, "get_role"):
@@ -455,7 +665,7 @@ class InstagramFeed(commands.Cog):
         try:
             await channel.send(
                 content=content,
-                embed=self._build_post_embed(post),
+                embed=self._build_post_embed(post, source_url),
                 allowed_mentions=discord.AllowedMentions(
                     roles=allowed_roles,
                     users=False,
@@ -493,6 +703,20 @@ def _post_sort_key(post: feed.InstagramPost):
 
 def _env_text(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+def _configured_profile_values(configured) -> list[str]:
+    values = [str(value) for value in getattr(configured, "profile_urls", None) or []]
+    return values or [str(getattr(configured, "profile_url", "") or "")]
+
+
+def _normalise_profile_values(values: Iterable[str]) -> tuple[str, ...]:
+    profile_urls: list[str] = []
+    for value in values:
+        for profile_url in feed.parse_instagram_profile_list(value)[0]:
+            if profile_url not in profile_urls:
+                profile_urls.append(profile_url)
+    return tuple(profile_urls)
 
 
 def _int_value(value, default: int) -> int:
