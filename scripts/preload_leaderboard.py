@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from bot.utils.timeouts import wait_for
 from bot.utils.message_history import (
     SCOPE,
     HistoryProgress,
@@ -97,7 +98,7 @@ async def preload(guild_id: int, output: Path, state_path: Path, concurrency: in
             guild = await client.fetch_guild(guild_id)
         except discord.NotFound as exc:
             raise ValueError(f"Local bot {client.user.id} cannot access target guild {guild_id} (404)") from exc
-        async with asyncio.timeout(6 * 60 * 60):
+        async def run_collection():
             scope = await discover_scope(guild, client.user.id, progress, report=report)
             visible_ids = {str(channel.id) for channel in scope.channels}
             missing = set(state["channel_ids"]) - visible_ids
@@ -113,6 +114,9 @@ async def preload(guild_id: int, output: Path, state_path: Path, concurrency: in
                 cursors={key: int(value) for key, value in state["cursors"].items()},
                 concurrency=concurrency, checkpoint=checkpoint, report=report,
             )
+            return scope, counts
+
+        scope, counts = await wait_for(run_collection(), timeout=6 * 60 * 60)
     snapshot = write_snapshot(output, scope, cutoff_id, counts)
     emit("complete", reused=False, guild_id=str(guild_id), users=len(snapshot.counts),
          messages=sum(snapshot.counts.values()), channels=len(snapshot.channel_ids),

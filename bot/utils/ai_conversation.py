@@ -7,6 +7,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable
 
+from bot.utils.timeouts import wait_for
 from bot.utils.ai_context import estimate_tokens
 
 
@@ -335,7 +336,7 @@ class ConversationManager:
         try:
             result = callback(scope)
             if inspect.isawaitable(result):
-                result = await asyncio.wait_for(result, timeout=self.fetch_timeout)
+                result = await wait_for(result, timeout=self.fetch_timeout)
             return bool(result)
         except Exception:
             return False
@@ -585,7 +586,7 @@ class ConversationManager:
             return None
         result = fetcher(message_id)
         if inspect.isawaitable(result):
-            return await asyncio.wait_for(result, timeout=self.fetch_timeout)
+            return await wait_for(result, timeout=self.fetch_timeout)
         return result
 
     async def _history_page(self, channel: Any, before: Any, limit: int) -> list[Any]:
@@ -776,7 +777,7 @@ class ConversationManager:
                     return target_id, None, None, False
                 calls += 1
                 try:
-                    source_message = await asyncio.wait_for(
+                    source_message = await wait_for(
                         self._fetch_message(channel, target_id),
                         timeout=self.fetch_timeout,
                     )
@@ -868,7 +869,7 @@ class ConversationManager:
                 break
             calls += 1
             try:
-                page = await asyncio.wait_for(
+                page = await wait_for(
                     self._history_page(channel, before, page_limit),
                     timeout=self.fetch_timeout,
                 )

@@ -11,6 +11,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
+from bot.utils.timeouts import wait_for
 from bot.utils.ai_rag import RagHit, RagQueryResult
 
 
@@ -252,7 +253,7 @@ class ReadonlyToolRegistry:
             return await self._web_search(query)
         except _InvalidArguments as exc:
             return ToolResult("invalid", detail=str(exc))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult("timeout", detail="Tool execution exceeded its time limit.")
         except Exception:
             return ToolResult("error", detail="Tool execution failed.")
@@ -343,7 +344,7 @@ class ReadonlyToolRegistry:
                 gate = asyncio.Semaphore(_SYNC_GATE_LIMIT)
                 _SYNC_GATES[loop] = gate
         remaining = deadline - loop.time()
-        await asyncio.wait_for(gate.acquire(), timeout=remaining)
+        await wait_for(gate.acquire(), timeout=remaining)
         try:
             task = loop.create_task(asyncio.to_thread(function, *args, **kwargs))
         except BaseException:
@@ -361,12 +362,12 @@ class ReadonlyToolRegistry:
         task.add_done_callback(release_when_worker_finishes)
         remaining = deadline - loop.time()
         if remaining <= 0:
-            raise asyncio.TimeoutError
-        return await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+            raise TimeoutError
+        return await wait_for(asyncio.shield(task), timeout=remaining)
 
     async def _call(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         if inspect.iscoroutinefunction(function):
-            return await asyncio.wait_for(function(*args, **kwargs), timeout=self.timeout)
+            return await wait_for(function(*args, **kwargs), timeout=self.timeout)
         deadline = asyncio.get_running_loop().time() + self.timeout
         value = await self._run_sync(function, *args, **kwargs)
         if inspect.isawaitable(value):
@@ -374,8 +375,8 @@ class ReadonlyToolRegistry:
             if remaining <= 0:
                 if inspect.iscoroutine(value):
                     value.close()
-                raise asyncio.TimeoutError
-            return await asyncio.wait_for(value, timeout=remaining)
+                raise TimeoutError
+            return await wait_for(value, timeout=remaining)
         return value
 
     async def _search_admission_guides(self, query: str, top_k: int) -> ToolResult:
@@ -402,7 +403,7 @@ class ReadonlyToolRegistry:
                     query_text=query,
                     top_k=top_k,
                 )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise
         except Exception:
             return ToolResult("error", detail="Admission-guide search failed.")
@@ -453,7 +454,7 @@ class ReadonlyToolRegistry:
                 chunk=chunk,
                 limit=self.max_top_k,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise
         except Exception:
             return ToolResult("error", detail="Admission-guide reading failed.")
@@ -477,7 +478,7 @@ class ReadonlyToolRegistry:
             return ToolResult("unavailable", detail="Web-search provider is unavailable.")
         try:
             raw_result = await self._call(self.web_search, query)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise
         except Exception:
             return ToolResult("error", detail="Web search failed.")

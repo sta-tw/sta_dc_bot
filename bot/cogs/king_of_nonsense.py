@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
+from bot.utils.timeouts import wait_for
 from bot.utils.config_paths import ConfigPaths
 from bot.utils.message_history import (
     HistoryProgress,
@@ -239,14 +240,16 @@ class KingOfNonsense(commands.Cog):
             if delay > 0:
                 await asyncio.sleep(delay)
             progress = self._seed_progress.setdefault(guild.id, HistoryProgress())
-            async with asyncio.timeout(6 * 60 * 60):
+            async def run_collection():
                 scope = await discover_scope(guild, self.bot.user.id, progress)
-                counts = await collect_history(
+                return await collect_history(
                     scope,
                     upper_id=cutoff_id,
                     progress=progress,
                     snapshot=self._snapshots.get(guild.id),
                 )
+
+            counts = await wait_for(run_collection(), timeout=6 * 60 * 60)
             snapshot = self._snapshots.get(guild.id)
             async with self._get_lock(self._write_locks, guild.id):
                 committed = await db.finish_message_history_seed(
@@ -292,7 +295,7 @@ class KingOfNonsense(commands.Cog):
     ) -> list[tuple[discord.Member, int]]:
         if not guild.chunked:
             try:
-                await asyncio.wait_for(guild.chunk(cache=True), timeout=20)
+                await wait_for(guild.chunk(cache=True), timeout=20)
             except (discord.ClientException, discord.HTTPException, TimeoutError) as exc:
                 raise ValueError("成員資料尚未載入完成，請稍後重新查詢。") from exc
 

@@ -170,7 +170,7 @@ async def test_reply_google_meme_generic_error(bot: commands.Bot, tmp_path: Path
 
 
 def test_extension_configured_in_bot_json() -> None:
-    with open('D:/sta_dc_bot/config/bot.json', 'r', encoding='utf-8') as f:
+    with open(ConfigPaths.BOT_CONFIG, 'r', encoding='utf-8') as f:
         data = json.load(f)
     assert "bot.cogs.google_meme" in data["extensions"]
 

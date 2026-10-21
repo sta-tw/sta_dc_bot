@@ -399,7 +399,7 @@ class ResourceLibraryCog(commands.Cog):
             if response.status != 200 or not isinstance(user_data, dict):
                 return self._standalone_redirect(error="authorization_failed")
             user_id = int(user_data["id"])
-        except (aiohttp.ClientError, TimeoutError, KeyError, TypeError, ValueError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, KeyError, TypeError, ValueError):
             logger.exception("Standalone Discord OAuth validation failed")
             return self._standalone_redirect(error="authorization_failed")
 
@@ -451,7 +451,7 @@ class ResourceLibraryCog(commands.Cog):
                 },
             ) as response:
                 token_data = await response.json(content_type=None)
-        except (aiohttp.ClientError, TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError):
             logger.exception("Discord OAuth token exchange failed")
             raise web.HTTPBadGateway(text="無法連線至 Discord OAuth。")
         if response.status != 200 or not token_data.get("access_token"):
@@ -489,7 +489,7 @@ class ResourceLibraryCog(commands.Cog):
                 user_data = await response.json(content_type=None)
         except web.HTTPException:
             raise
-        except (aiohttp.ClientError, TimeoutError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError):
             logger.exception("Discord identity verification failed")
             raise web.HTTPBadGateway(text="無法驗證 Discord 使用者。")
 

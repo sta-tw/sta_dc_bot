@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 
+from bot.utils.timeouts import wait_for
 from bot.utils.ai_context import (
     ContextOverflow, PromptBudget, PromptEnvelope, reduce_envelope, source_excerpt,
 )
@@ -185,7 +186,7 @@ class LLMWorkerPool:
         self._workers: set[asyncio.Task[Any]] = set()
 
     async def run(self, function: Callable[[], Any], budget: TurnBudget) -> Any:
-        await asyncio.wait_for(self._slots.acquire(), timeout=budget.remaining())
+        await wait_for(self._slots.acquire(), timeout=budget.remaining())
 
         async def worker() -> Any:
             try:
@@ -202,7 +203,7 @@ class LLMWorkerPool:
                 done.exception()
 
         task.add_done_callback(finished)
-        return await asyncio.wait_for(asyncio.shield(task), timeout=budget.remaining())
+        return await wait_for(asyncio.shield(task), timeout=budget.remaining())
 
 
 _LLM_POOLS: weakref.WeakKeyDictionary[Any, LLMWorkerPool] = weakref.WeakKeyDictionary()
@@ -659,7 +660,7 @@ class AnswerPipeline:
                     result_data = {"status": "unknown", "evidence": [], "detail": "Tool is not allowlisted."}
                     result_json = json.dumps(result_data)
                 else:
-                    result = await asyncio.wait_for(registry.execute(name, arguments), timeout=budget.remaining())
+                    result = await wait_for(registry.execute(name, arguments), timeout=budget.remaining())
                     result_json = result.to_json()
                     result_data = json.loads(result_json)
                 envelope.tool_statuses.append({"call_id": call_id, "tool_name": name,
@@ -754,7 +755,7 @@ class AnswerPipeline:
             if memory_loader is not None:
                 stage = "memory"
                 self._log_stage(request_id, request, stage=stage, event="start")
-                memory = await asyncio.wait_for(memory_loader(), timeout=budget.remaining())
+                memory = await wait_for(memory_loader(), timeout=budget.remaining())
                 request = replace(request, memory=tuple(memory))
                 self._log_stage(request_id, request, stage=stage, event="determined", outcome="loaded")
 

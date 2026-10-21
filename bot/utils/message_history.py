@@ -13,6 +13,8 @@ from typing import Awaitable, Callable
 
 import discord
 
+from bot.utils.timeouts import wait_for
+
 
 SCOPE = "readable-text-active-threads-public-archives-v1"
 MAX_INTEGER = (1 << 63) - 1
@@ -286,7 +288,7 @@ async def collect_history(
             try:
                 while True:
                     try:
-                        message = await asyncio.wait_for(anext(iterator), timeout=300)
+                        message = await wait_for(anext(iterator), timeout=300)
                     except StopAsyncIteration:
                         break
                     progress.messages_read += 1

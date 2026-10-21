@@ -18,6 +18,7 @@ from discord.ext import commands
 from openai import OpenAI
 
 from bot.utils.config import save_llm_disabled_channel_ids
+from bot.utils.timeouts import wait_for
 from bot.utils.ai_context import ContextOverflow, PromptBudget, trim_lines
 from bot.utils.ai_conversation import ConversationManager, ConversationScope
 from bot.utils.ai_pipeline import (
@@ -460,7 +461,7 @@ class AiChat(commands.Cog):
 
     async def _clear_thinking_reaction(self, message: discord.Message) -> None:
         try:
-            await asyncio.wait_for(
+            await wait_for(
                 message.remove_reaction(self.THINKING_EMOJI, self.bot.user), timeout=self.REACTION_TIMEOUT,
             )
         except Exception as exc:
@@ -478,7 +479,7 @@ class AiChat(commands.Cog):
         try:
             if mentioned:
                 try:
-                    await asyncio.wait_for(message.add_reaction(self.THINKING_EMOJI), timeout=self.REACTION_TIMEOUT)
+                    await wait_for(message.add_reaction(self.THINKING_EMOJI), timeout=self.REACTION_TIMEOUT)
                 except (discord.Forbidden, discord.NotFound):
                     cleanup = False
                 except Exception as exc:
