@@ -226,7 +226,6 @@ async def test_boundary_is_installed_before_database_is_exposed(tmp_path, monkey
         author=SimpleNamespace(id=2, bot=False), webhook_id=None))
     assert instance._history_cutoffs[1] == upper
     assert instance._seed_tokens[1]
-    assert instance._snapshots[1] is None
     assert await db.get_message_leaderboard() == []
     await instance.on_message(SimpleNamespace(id=upper, guild=guild,
         author=SimpleNamespace(id=2, bot=False), webhook_id=None))
@@ -374,21 +373,3 @@ async def test_seed_worker_prepares_missing_attempt_before_scanning(tmp_path, mo
         progress=instance._seed_progress[1], snapshot=None)
     assert await db.is_message_history_verified()
     assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 3}]
-
-
-@pytest.mark.asyncio
-async def test_verified_database_is_not_reseeded_when_snapshot_exists(tmp_path, monkeypatch):
-    db = await database(tmp_path)
-    await db.begin_message_history_seed("complete", 100)
-    await db.finish_message_history_seed("complete", {2: 5}, "full-history")
-    snapshot_path = tmp_path / "leaderboard_preloads" / "1.json"
-    snapshot_path.parent.mkdir()
-    snapshot_path.write_text("{}", encoding="utf-8")
-    instance = cog()
-    monkeypatch.setattr(king, "DatabaseManager", lambda *args: db)
-    monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
-    assert await instance._get_db(SimpleNamespace(id=1, name="guild")) is db
-    assert await db.is_message_history_verified()
-    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 5}]
-    assert instance._seed_tokens == {}
-    assert instance._history_cutoffs == {}

@@ -7,7 +7,6 @@ import os
 import json
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from .utils.config import Settings
@@ -173,14 +172,8 @@ def _find_local_command(
 async def _sync_global_single_command(
     bot: commands.Bot,
     command_name: str,
-    *,
-    command_type: discord.AppCommandType | None = None,
 ) -> str:
-    local_command = (
-        _find_local_command(bot, command_name)
-        if command_type is None
-        else bot.tree.get_command(command_name, type=command_type)
-    )
+    local_command = _find_local_command(bot, command_name)
     if local_command is None:
         return "local command unavailable"
 
@@ -272,7 +265,6 @@ async def _sync_missing_global_commands(bot: commands.Bot) -> dict[str, str]:
         statuses[local_command.name] = await _sync_global_single_command(
             bot,
             local_command.name,
-            command_type=_local_command_type(local_command),
         )
     return statuses
 

@@ -258,3 +258,4 @@ python main.py
 ```
 
 如需新增功能模組，在 `config/bot.json` 的 `extensions` 陣列加入模組路徑（例如 `bot.cogs.my_feature`）即可自動載入。
+
