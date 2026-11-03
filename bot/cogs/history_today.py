@@ -17,7 +17,7 @@ from discord.ext import commands, tasks
 from bot.utils.config_paths import ConfigPaths
 from bot.utils.history_formatting import build_embed
 from bot.utils.history_scheduler import DailyScheduler
-from bot.utils.history_today import CATEGORY_LABELS, Category, HistoryClient, HistoryError, validate_date
+from bot.utils.history_today import CATEGORY_LABELS, WIKIPEDIA_USER_AGENT, Category, HistoryClient, HistoryError, validate_date
 from database.history import Store, Subscription
 
 
@@ -66,7 +66,7 @@ class HistoryToday(commands.Cog):
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=20),
             trust_env=True,
-            headers={"User-Agent": "HistoryTodayDiscordBot/1.0 (educational date lookup; Python/aiohttp)"},
+            headers={"User-Agent": WIKIPEDIA_USER_AGENT},
         )
         self.history = HistoryClient(self.session)
         if self._start_task:

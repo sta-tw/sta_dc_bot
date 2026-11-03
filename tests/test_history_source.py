@@ -196,6 +196,10 @@ class HistoryClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["params"]["uselang"], "zh-tw")
         self.assertEqual(kwargs["timeout"].total, 15)
         self.assertIn("HistoryOnThisDayDiscordBot", kwargs["headers"]["User-Agent"])
+        self.assertIn(
+            "https://github.com/steventeng2022/sta_dc_bot-1",
+            kwargs["headers"]["User-Agent"],
+        )
 
     async def test_invalid_input_never_requests_upstream(self):
         session = FakeSession()

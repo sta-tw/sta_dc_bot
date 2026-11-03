@@ -62,6 +62,10 @@ class HistoryError(Exception):
 
 
 WIKIPEDIA_API = "https://zh.wikipedia.org/w/api.php"
+WIKIPEDIA_USER_AGENT = (
+    "HistoryOnThisDayDiscordBot/1.0 "
+    "(https://github.com/steventeng2022/sta_dc_bot-1; calendar history lookup)"
+)
 CACHE_TTL_SECONDS = 6 * 60 * 60
 CACHE_MAX_ENTRIES = 366
 REQUEST_TIMEOUT_SECONDS = 15
@@ -289,9 +293,7 @@ class HistoryClient:
             WIKIPEDIA_API,
             params=params,
             timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
-            headers={
-                "User-Agent": "HistoryOnThisDayDiscordBot/1.0 (calendar history bot)"
-            },
+            headers={"User-Agent": WIKIPEDIA_USER_AGENT},
         ) as response:
             if response.status == 429:
                 raise _TransientResponse(
