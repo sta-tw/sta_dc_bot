@@ -22,7 +22,7 @@ async def test_activity_serves_bundled_discord_sdk(monkeypatch):
             async with session.get(f"http://127.0.0.1:{port}/activity") as response:
                 assert response.status == 200
                 index = await response.text()
-                assert "app.js?v=sta-theme-4" in index
+                assert "app.js?v=resource-split-5" in index
                 assert "登入後會載入五份文件。" in index
                 assert 'rel="icon"' in index
 

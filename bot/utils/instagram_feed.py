@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -13,13 +14,17 @@ from urllib.parse import urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
+from bot.utils.config import write_config_text
+
 
 DEFAULT_USER_AGENT = "sta-dc-bot/1.0 (+public-instagram-profile)"
 MAX_FEED_BYTES = 2 * 1024 * 1024
 MAX_PROFILE_BYTES = MAX_FEED_BYTES
 MAX_PREVIEW_TEXT_CHARS = 1000
+STATE_SCHEMA_VERSION = 2
 _INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 _PROFILE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._]+$")
+_PROFILE_LIST_SEPARATOR_RE = re.compile(r"[\s,，、]+")
 _POST_PATH_RE = re.compile(
     r"(?:https?:)?//(?:www\.)?instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)",
     re.IGNORECASE,
@@ -87,6 +92,27 @@ def normalise_instagram_profile_url(value: str) -> str:
         if "/" not in value:
             return f"https://www.instagram.com/{value.lstrip('@')}/"
     return value
+
+
+def parse_instagram_profile_list(value: str) -> tuple[list[str], list[str]]:
+    profile_urls: list[str] = []
+    invalid_entries: list[str] = []
+    for entry in _PROFILE_LIST_SEPARATOR_RE.split((value or "").strip()):
+        if not entry:
+            continue
+        profile_url = normalise_instagram_profile_url(entry)
+        if not is_valid_instagram_profile_url(profile_url):
+            invalid_entries.append(entry)
+        elif profile_url not in profile_urls:
+            profile_urls.append(profile_url)
+    return profile_urls, invalid_entries
+
+
+def instagram_username_from_profile_url(profile_url: str) -> str:
+    if not is_valid_instagram_profile_url(profile_url):
+        return ""
+    segments = [segment for segment in urlparse(profile_url.strip()).path.split("/") if segment]
+    return segments[0]
 
 
 def _is_same_instagram_profile_page(requested_url: str, response_url: str) -> bool:
@@ -352,7 +378,7 @@ def save_instagram_configuration(
     path: Path,
     *,
     enabled: bool,
-    profile_url: str,
+    profile_urls: Sequence[str],
     guild_id: int,
     channel_id: int,
     role_id: int,
@@ -367,38 +393,24 @@ def save_instagram_configuration(
     configured = data.get("instagram_feed")
     if not isinstance(configured, dict):
         configured = {}
+    configured.pop("profile_url", None)
     configured.update(
         {
             "enabled": bool(enabled),
-            "profile_url": profile_url,
+            "profile_urls": [str(url) for url in profile_urls],
             "guild_id": int(guild_id),
             "channel_id": int(channel_id),
             "role_id": int(role_id),
         }
     )
     data["instagram_feed"] = configured
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary_path, path)
-    finally:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
+    write_config_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
-def empty_state(source_url: str = "") -> dict[str, object]:
+def empty_state() -> dict[str, object]:
     return {
-        "schema_version": 1,
-        "source_url": source_url,
-        "initialized": False,
-        "watermark": None,
+        "schema_version": STATE_SCHEMA_VERSION,
+        "accounts": {},
         "seen": {},
     }
 
@@ -424,12 +436,38 @@ def load_state(path: Path) -> dict[str, object]:
         if str(key).strip() and str(value).strip()
     }
     return {
-        "schema_version": int(data.get("schema_version", 1) or 1),
-        "source_url": str(data.get("source_url", data.get("feed_url", "")) or ""),
-        "initialized": bool(data.get("initialized", bool(seen))),
-        "watermark": data.get("watermark"),
+        "schema_version": STATE_SCHEMA_VERSION,
+        "accounts": _load_account_states(data, has_seen=bool(seen)),
         "seen": seen,
     }
+
+
+def _load_account_states(data: dict, *, has_seen: bool) -> dict[str, dict[str, object]]:
+    accounts: dict[str, dict[str, object]] = {}
+    raw_accounts = data.get("accounts")
+    if isinstance(raw_accounts, dict):
+        for source_url, entry in raw_accounts.items():
+            if str(source_url).strip() and isinstance(entry, dict):
+                accounts[str(source_url)] = {
+                    "initialized": bool(entry.get("initialized", False)),
+                    "watermark": entry.get("watermark"),
+                    "visible": _visible_keys(entry.get("visible")),
+                }
+
+    legacy_source_url = str(data.get("source_url", data.get("feed_url", "")) or "").strip()
+    if legacy_source_url and legacy_source_url not in accounts:
+        accounts[legacy_source_url] = {
+            "initialized": bool(data.get("initialized", has_seen)),
+            "watermark": data.get("watermark"),
+            "visible": [],
+        }
+    return accounts
+
+
+def _visible_keys(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(key) for key in value if str(key).strip()]
 
 
 def save_state(path: Path, state: dict[str, object]) -> None:
@@ -457,6 +495,7 @@ def prune_seen(
     retention_days: int = 30,
     max_items: int = 5000,
     now: datetime | None = None,
+    keep: Iterable[str] = (),
 ) -> None:
     """Keep the duplicate watermark bounded while retaining recent post IDs."""
 
@@ -467,18 +506,20 @@ def prune_seen(
 
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=max(1, int(retention_days)))
+    kept_keys = set(keep)
     retained: list[tuple[str, str, datetime]] = []
     for key, raw_timestamp in seen_data.items():
         timestamp = _parse_datetime(str(raw_timestamp))
-        if timestamp is None or timestamp >= cutoff:
+        if timestamp is None or timestamp >= cutoff or str(key) in kept_keys:
             if timestamp is None:
                 timestamp = now
             retained.append((str(key), str(raw_timestamp), timestamp))
 
     retained.sort(key=lambda item: item[2], reverse=True)
-    state["seen"] = {
-        key: raw_timestamp for key, raw_timestamp, _ in retained[: max(1, int(max_items))]
-    }
+    seen_data.clear()
+    seen_data.update(
+        {key: raw_timestamp for key, raw_timestamp, _ in retained[: max(1, int(max_items))]}
+    )
 
 
 def _local_name(tag: str) -> str:

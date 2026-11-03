@@ -13,6 +13,7 @@ from bot import (
     _HISTORY_COMMANDS,
     _sync_global_commands,
     _sync_global_resource_setup_command,
+    _sync_missing_global_commands,
 )
 from bot.cogs.ai_chat import AiChat
 from bot.cogs.king_of_nonsense import KingOfNonsense
@@ -429,4 +430,73 @@ async def test_history_fallback_updates_admin_metadata_with_matching_options(
         },
     )
     bot.http.upsert_global_command.assert_not_awaited()
+    bot.http.bulk_upsert_global_commands.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_missing_global_commands_creates_only_missing_context_menu():
+    from bot.cogs.google_meme import COMMAND_NAME, GoogleMeme
+
+    bot = _make_bot()
+    bot.tree.add_command(GoogleMeme(bot).context_menu)
+    bot.http.get_global_commands.return_value = [
+        _remote_command(bot, 1001),
+        _entry_point_command(),
+    ]
+    llm_channel = bot.tree.get_command("llm_channel").to_dict(bot.tree)
+    llm_channel.update({"id": 1002, "application_id": APPLICATION_ID})
+    leaderboard = KingOfNonsense.leaderboard.to_dict(bot.tree)
+    leaderboard.update({"id": 1003, "application_id": APPLICATION_ID})
+    bot.http.get_global_commands.return_value += [llm_channel, leaderboard]
+
+    statuses = await _sync_missing_global_commands(bot)
+
+    assert statuses == {COMMAND_NAME: "created"}
+    bot.http.upsert_global_command.assert_awaited_once()
+    assert bot.http.upsert_global_command.await_args.args[1]["type"] == 3
+    bot.http.bulk_upsert_global_commands.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_type", [discord.AppCommandType.message, discord.AppCommandType.user])
+@pytest.mark.parametrize("remote_present", [False, True])
+async def test_missing_context_menu_can_share_a_name_with_a_slash_command(
+    command_type, remote_present,
+):
+    async def message_callback(interaction: discord.Interaction, message: discord.Message):
+        pass
+
+    async def user_callback(interaction: discord.Interaction, user: discord.User):
+        pass
+
+    bot = _make_history_bot()
+    menu = app_commands.ContextMenu(
+        name="daily",
+        callback=message_callback if command_type == discord.AppCommandType.message else user_callback,
+    )
+    bot.tree.add_command(menu)
+    remote_commands = [
+        _remote_payload_for_name(bot, command.name, index + 9000)
+        for index, command in enumerate(bot.tree.get_commands(type=discord.AppCommandType.chat_input))
+    ] + [_entry_point_command()]
+    if remote_present:
+        remote_commands.append({
+            **menu.to_dict(bot.tree), "id": 10000, "application_id": APPLICATION_ID,
+            "description": "",
+        })
+    bot.http.get_global_commands.return_value = remote_commands
+    original_remote = deepcopy(remote_commands)
+
+    statuses = await _sync_missing_global_commands(bot)
+
+    if remote_present:
+        assert statuses == {}
+        bot.http.upsert_global_command.assert_not_awaited()
+    else:
+        assert statuses == {"daily": "created"}
+        bot.http.upsert_global_command.assert_awaited_once_with(
+            APPLICATION_ID, menu.to_dict(bot.tree),
+        )
+    assert remote_commands == original_remote
+    bot.http.edit_global_command.assert_not_awaited()
     bot.http.bulk_upsert_global_commands.assert_not_awaited()

@@ -34,21 +34,51 @@ readme by claude
 - `/delete_channel`：刪除機器人建立的頻道。
 - `/assign_roles`：依據 JSON 檔案批次分配身分組（管理員）。
 - `/sync` / `/sync_global`：強制重新同步 Slash 指令（管理員）。
-- Instagram 貼文通知：每 5 分鐘輪詢設定好的公開 Instagram 個人頁面，有新貼文時在指定頻道通知並提及指定身分組，訊息會顯示預覽文字與圖片；領取身分組使用獨立的持久化面板。
-- `/instagram_setup`：用 Slash Command 設定公開 Instagram 帳號、通知頻道與通知身分組。
+- Instagram 貼文通知：每 5 分鐘輪詢設定好的一或多個公開 Instagram 個人頁面，有新貼文時在指定頻道通知並提及指定身分組，訊息會顯示發文帳號、預覽文字與圖片；領取身分組使用獨立的持久化面板。
+- `/instagram_setup`：用 Slash Command 設定通知頻道與通知身分組，並加入公開 Instagram 帳號（多個帳號以逗號分隔，既有帳號會保留）。
+- `/instagram_remove_account`：從通知清單移除指定的公開 Instagram 帳號；清單清空後，Instagram 通知會停用。
+- `/instagram_test`：在目前頻道送出每個帳號最新貼文的測試通知（不提及身分組，不改變已記錄的貼文），用來確認通知格式。
 - `/instagram_role_button`：在目前執行指令的頻道建立獨立的領取「走在時代尖端」身分組面板；不綁定 Instagram 通知頻道。
 
 ### AI 助手
-- 在頻道中提及機器人即可取得 AI 回覆。
-- AI 會先使用頻道上下文、長期記憶與已匯入的招生簡章；資料不足時會透過 SearXNG 搜尋工具再回答。
-- `/rag_add`：由伺服器管理員或 `support_role_ids` 身分組上傳 PDF/UTF-8 文字格式簡章，供同一伺服器的 AI 查詢。
-- `/llm_channel`：由伺服器管理員或 `support_role_ids` 身分組設定指定文字頻道是否啟用 LLM；停用時不會觸發 AI 回覆，也不會將頻道訊息寫入長期記憶。
-- 頻道歷史會保留本機器人自己的回覆並以 assistant 角色傳給模型；其他機器人訊息會排除，其他成員與目前使用者會用穩定 ID 和說話者標籤區分。
-- RAG 會先用簡章標題／內容做關鍵字重排；查詢明確提到學校時會套用來源一致性門檻，不會把其他學校的相似向量結果當成答案。
-- 搜尋與簡章內容會被視為不可信參考資料，回答應標示來源，不會把其中的指令當成系統指令。
+- 已允許 AI 的頻道／thread 預設**不必 @Bot**：通過既有 Discord gates 的訊息直接進入草稿生成，不再呼叫獨立分類器或在生成前篩掉問候、閒聊與玩笑。`VLLM_MENTION_ONLY=0` 時，未 @Bot 的這些訊息也會進入回答流程，回覆量與模型用量可能增加；設 `1` 則只處理直接提及。有效 Bot 指令、DM、Bot/webhook、空白無附件訊息、群體提及與停用／未授權頻道仍不處理。
+- 問候與閒聊可正常生成待審回覆，不再因「不是具體問題」發送固定補充問題通知。直接 @Bot **不會免除兩道審核**：審核拒絕、嚴格 JSON／ID／digest 檢查或最終完整性檢查失敗時，固定告知無法提供已核准回答，請改寫或稍後再試；未 @Bot 的拒絕保持安靜。過長、限流及管線服務故障仍使用固定狀態通知；限流冷卻期間未 @Bot 保持安靜。通知不引用原問題、模型理由、草稿或例外本文，也不保存為 AI 問答。
+- 佇列已滿或 scheduler 外層逾時，只對直接 @Bot 發送固定狀態通知；通知前重新確認權限及來源回合的 revision／generation（包括編輯、刪除、停用、TTL／eviction）。一般管線通知不由 listener 重送。每回合在第一次呼叫 Discord reply **之前**標記已嘗試送出；答案／通知的 acknowledgement、記憶或反應清理仍等待時逾時，也不會多補一則通知。實際傳送失敗不自動改送其他通知；取消、失效、重複或未授權回合不發布。
+- 直接 @Bot 的訊息在佇列中開始處理時加上 **🤔** 反應，直到兩道審核及回覆完成後移除。審核拒絕、失敗、逾時、編輯／刪除／停用導致取消時也會嘗試清理；只移除 Bot 自己的反應，不清除其他成員的 emoji。未 @Bot、重複訊息或佇列已滿不加反應；尚在排隊的訊息開始處理後才加。新增／移除各有 3 秒上限，缺少反應權限、訊息已刪除或 Discord API 失敗不阻止原本的雙重審核與回覆；清理是 best-effort，API 不可用時不能保證反應已移除；🤔 消失只表示這個處理回合已結束，不代表成功回答。
+- 管線為「Discord gate → 授權上下文與記憶 → 草稿／唯讀工具 → 繁中轉換、mention 清理、長度處理 → **上下文審核 → output-only 安全審核** → 發送 → 答案記憶」。兩道審核都必須核准同一份完整 candidate ID／SHA-256；缺少任何一道核准、拒絕、格式錯誤、逾時或審核故障都不發送或保存草稿。全回合最多改稿一次，任一道要求改稿後必須重新通過兩道審核，不能沿用舊判定；雙重核准後不再改寫。只有程式定義的靜態服務狀態通知可免答案審核；身分問答與空回答 fallback 也必經兩道審核。
+- 上下文先追蹤同頻道的回覆祖先與相關分支，再納入附近多人交流，保留訊息／說話者 ID、時間及本機器人實際回覆 ID；不再固定最近 8 則。分頁與 API 次數有上限，不跨 guild／channel／私密 thread 取聊天。編輯、刪除、停用或權限變更會使相關快取失效。Session 只在記憶體，預設 idle TTL 30 分鐘、最多 100 個，不建立永久完整聊天紀錄。
+- 每個 stage／工具回合計入規則、messages、工具 schemas、圖片 reserve 與輸出額度；接近 context window 時自動摘要，摘要來源 ID 必須可驗證且保留原文片段。摘要失敗改用有來源的 deterministic extraction／relevance reduction。規則、最新問題與待審完整文字不可截掉；最低必要內容仍放不下時回報過長，不呼叫超額 API。未知 tokenizer 使用保守**估計**，不是精確 token count。
+- 招生簡章改為模型按需呼叫 `search_admission_guides`／`read_admission_guide`；不再每題預查 RAG。`web_search` 僅在原開關啟用時提供，關閉 web 不會停用 RAG。工具只讀、host 綁定 guild、同文件讀取限於本回合搜尋／host 授權的文件，不能指定其他 guild、任意路徑、URL fetch、shell 或寫入。所有工具 call IDs 配對且有輪數、次數、大小、timeout 上限；無結果、停用、不可用與失敗分別處理。
+- 簡章檢索分開比對校名、系組及問題主題：校名用於篩選，正文的審查／考試／資格等主題優先排序；明確指定資安組時，不把一般資工章節的資安競賽提及當成該組。缺少重複標題的續段，僅可承接同 guild／kind／文件／頁面、有效且唯一 metadata 下的前一 chunk 的最後可辨識系組標題；辨識到新系組標題會中止承接，不跨頁或串接多段。證據仍保留原文及來源，不拼接改寫；回傳數量、工具授權與雙重審核不變。別名與 PDF 文字格式仍有侷限，不保證找全所有條文，查無匹配不以同校封面充當答案來源。
+- `/rag_add`：由伺服器管理員或 `support_role_ids` 身分組上傳 PDF/UTF-8 簡章，維持原 guild 共享範圍、collection 與管理權限；檢索修正不重建既有索引，也不修改已上傳的簡章。
+- `/llm_channel`：由伺服器管理員或 `support_role_ids` 設定文字頻道開關；停用 parent 也停用旗下 thread，且清除相關 session／取消排隊中的回合。觀測到的聊天只留在有界 session，不直接寫入長期記憶；只有雙重核准、Discord 成功發送且上下文審核 `memory_safe=true` 的問答才寫入答案記憶。審核規則要求例行問候、閒聊與玩笑標為 `memory_safe=false`，但仍可核准回覆；此記憶判斷依賴 reviewer 標籤，不是另一道生成前意圖閘門。output-only 審核看不到原問題，不能自行把它判為可保存。仍只讀目前使用者既有 scope 的私人記憶，不讀其他參與者的私人記憶。
+- 文件、web snippets、speaker names、memory、摘要均為低信任資料，不能改政策、授權工具或免審。上下文審核仍負責問題相關性、來源與事實檢查。新增 output-only 審核使用全新封套，只傳可信 Bot 政策、完整候選答案及 host 產生的 ID／digest；不傳原問題、作者／頻道資訊、圖片、對話、記憶、摘要、evidence、工具結果、分類或前一道審核理由，完全不提供或執行工具。重試仍受同一 deadline／HTTP 呼叫額度／worker pool 限制，不能截斷政策或答案以塞入 context window。
+- 引用格式為 `[E:實際 evidence_id]`；上下文審核必須提供嚴格布林欄位 `requires_evidence`。需要查證的日期／招生條件等來源主張標為 `true` 時，host 不接受沒有本回合實際引用的實質答案；來源不足時澄清或承認不確定。證據需求的語意判斷由上下文審核負責，不另呼叫分類器；引用 ID、digest 及 evidence 綁定仍由程式檢查。**審核只能降低風險，不是真實性保證**，仍應核對官方原文。候選答案本身仍可能含注入（包括生成者複製的原問題），output-only 不代表免疫；正常教學／引用注入文字不會被關鍵字一律封鎖。不同 reviewer 模型也不保證安全判斷彼此獨立。新增審核不能撤銷之前已送出的 web query，也不修復既有 guild-scope memory 的跨頻道授權問題，或對事實審核 `answer_kind`／`evidence_ids` 模型標籤的依賴；不能代替原本的查證。
+- 每 channel／thread 序列化、有界排隊與 message-ID 去重；全域最多 2 個同步 LLM workers，取消 await 不會提前釋放正在執行 HTTP 的名額。正常成功回覆且無工具／摘要／重試／改稿時使用 3 個模型 stage（生成、上下文審核、output-only 審核），少掉原本的獨立分類請求；工具、摘要、重試與修正會增加成本／延遲。
+- 使用 Bot 既有 logger 記錄記憶載入、草稿／改稿、上下文審核、output-only 審核的開始及判定／終止，並記錄直接 @Bot 的 gate 略過、開始處理、送出結果及 scheduler timeout／cancel／stale／duplicate／busy。診斷只包含 host 產生的 request／message／guild／channel IDs、固定 stage／outcome／action／verdict 與例外類別；不記錄聊天內容、名字、記憶、審核理由、系統提示、模型／endpoint、provider 原始輸出、例外本文或憑證，也不附 traceback。不新增獨立 file logger；磁碟修補不會自動載入到已執行的 Bot，仍須由管理者另行重啟及在 Discord 驗證。
+
+#### AI 可選設定（不必修改現有 `.env`）
+沿用原 `VLLM_BASE_URL`／`VLLM_MODEL`、API key、system prompt、user template、memory／RAG／vision／web 開關；不更換 provider 或遠端配置。以下新增 knobs 都有程式預設：
+
+| 變數 | 預設／用途 |
+|---|---|
+| `VLLM_REVIEWER_MODEL`、`VLLM_OUTPUT_REVIEWER_MODEL` | 未設定時沿用 `VLLM_MODEL`（同端點，獨立審核請求）；output-only 審核預設必要，沒有略過開關 |
+| `VLLM_CLASSIFIER_MODEL` | 已停用；即使原 `.env` 留有此值，也不會呼叫分類模型 |
+| `VLLM_MENTION_ONLY` | `0`；設 `1` 恢復只回應 @Bot |
+| `VLLM_REQUEST_TIMEOUT` | `60` 秒；每次 HTTP timeout 也受原 `VLLM_TIMEOUT` 和整回合剩餘時間限制；SDK 自動重試關閉，原 `VLLM_REQUEST_RETRIES` 共用整回合額度 |
+| `VLLM_TURN_TIMEOUT`、`VLLM_TURN_MAX_CALLS` | `120` 秒／`16` 次 HTTP（含 retry、thinking compatibility fallback、摘要、修正與查證），避免重試額度相乘 |
+| `VLLM_TOOL_ROUNDS`、`VLLM_TOOL_CALLS` | 草稿最多 `3` 輪／`6` 次工具 |
+| `VLLM_REVIEW_TOOL_ROUNDS`、`VLLM_REVIEW_TOOL_CALLS` | 每次上下文審核最多 `1` 輪／`2` 次工具；output-only 審核完全禁用工具 |
+| `VLLM_TOOL_TIMEOUT`、`VLLM_MAX_REVISIONS` | `8` 秒／`1` 次改稿（最大 1 次） |
+| `VLLM_CHANNEL_QUEUE_SIZE`、`VLLM_GLOBAL_QUEUE_SIZE` | 每 scope 等候 `8` 筆／全域含執行中最多 `64` 筆 |
+| `VLLM_SESSION_IDLE_TTL`、`VLLM_MAX_SESSIONS`、`VLLM_SESSION_MAX_RECORDS` | `1800` 秒／`100` 個／每 scope `300` 筆（含 invalidation metadata） |
+| `VLLM_CONTEXT_API_CALLS`、`VLLM_CONTEXT_FETCH_TIMEOUT` | 每回合最多 `6` 次同頻道歷史／reference API，每次 `5` 秒 |
+| `VLLM_IMAGE_RESERVE_TOKENS` | 每張圖片估計 reserve `1536`；實際 tokenizer／vision patch 數不同可能需要提高 |
+
+既有 `VLLM_CONTEXT_MESSAGES` 保留為相容設定，不再控制新回覆鏈選取。`VLLM_MAX_REPLY_CHARS` 最多 2000 字元；舊 rate-limit／unavailable template 仍可載入，但非答案通知使用程式固定文字，不能夾帶模型答案。
 
 ### 資源彙整編輯與審核
-- `/resource_setup`：由具有「管理伺服器」權限的管理員指定五個正式資源頻道、審核頻道及通知身分組；初始化時由 Database 建立五份 Markdown 文件，Bot 在各正式頻道建立一則管理訊息。
+- `/resource_setup`：由具有「管理伺服器」權限的管理員指定五個正式資源頻道、審核頻道及通知身分組；初始化時由 Database 建立五份 Markdown 文件，Bot 在各正式頻道建立管理訊息。
 - `/resource_editor`：發布持久化的「開啟編輯器」按鈕，啟動 Discord Activity。編輯器可修改現役文件的 Markdown 原文、預覽 Markdown 及查看 Diff。
 - 提交內容會先以 `base_version` 儲存為 Draft 並建立 Review Thread；只有重新驗證後具有「管理伺服器」或「管理員」Discord 權限的人員可批准或拒絕。通知身分組只負責提醒，不代表審核權限。
 - 核准後 Database 版本遞增，再由 Bot 編輯原有正式訊息；`/resource_sync` 可將 Database 正式內容重新同步到五個頻道。人工修改的 Discord 訊息不會反向寫入 Database。
@@ -108,13 +138,13 @@ readme by claude
 /instagram_setup profile_url:https://www.instagram.com/帳號名稱/ channel:#通知頻道 role:@走在時代尖端
 ```
 
-`profile_url` 也可以直接填 Instagram 帳號名稱。此指令需要伺服器管理權限或 `support_role_ids` 內的身分組，並會將設定保存到 Bot 設定檔，立即啟用輪詢。設定完成後，可以在設定的伺服器內任意頻道執行 `/instagram_role_button`，面板會建立在目前執行指令的頻道；Instagram 貼文通知本身不會附帶按鈕，仍會固定發送到 `/instagram_setup` 設定的通知頻道。`/instagram_setup` 目前設定的是單一全域 Instagram 目標；重複執行會更新現有設定。若 `INSTAGRAM_PROFILE_URL` 環境變數有值，會優先於 Slash Command 設定，請先清除該環境變數。
+`profile_url` 也可以直接填 Instagram 帳號名稱；要設定多個帳號時用逗號分隔，例如 `profile_url:帳號A, 帳號B`。此指令需要伺服器管理權限或 `support_role_ids` 內的身分組，並會將設定保存到 Bot 設定檔，立即啟用輪詢。設定完成後，可以在設定的伺服器內任意頻道執行 `/instagram_role_button`，面板會建立在目前執行指令的頻道；Instagram 貼文通知本身不會附帶按鈕，仍會固定發送到 `/instagram_setup` 設定的通知頻道。多個帳號共用同一個通知頻道與身分組，各自獨立輪詢。`/instagram_setup` 會把輸入的帳號加入清單，既有帳號保留；要移除帳號請用 `/instagram_remove_account`。若 `INSTAGRAM_PROFILE_URL` 環境變數有值（同樣可用逗號分隔），會優先於 Slash Command 設定，請先清除該環境變數。
 
 如果 Slash Command 尚未出現，請確認根層 `guild_id` 已設定為目標伺服器 ID 後重啟 Bot，或使用管理員的 `/sync`；全域同步可能需要等待一段時間。
 
 Bot 會每 5 分鐘以不帶登入狀態的單次 HTTP GET 讀取公開 Instagram 個人頁面，解析頁面中公開呈現的貼文連結。**不支援 Instagram 登入、Cookie、私人 API、CAPTCHA、代理輪換或繞過反爬限制**。如果 Instagram 回傳登入頁、401/403 或暫時封鎖，Bot 會略過該次檢查，不會嘗試繞過限制。首次啟動會先記錄目前已存在的貼文，不會一次刷出歷史貼文。
 
-貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`，Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
+貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`（所有帳號共用同一份檔案，各帳號分別記錄是否已完成首次快照）；同一則貼文若同時出現在兩個帳號（合作貼文），只會通知一次。Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
 
 ---
 
@@ -126,12 +156,13 @@ Bot 會每 5 分鐘以不帶登入狀態的單次 HTTP GET 讀取公開 Instagra
 |---|---|
 | `/today` | 依預設時區查詢今天，預設大事記 5 筆。 |
 | `/today month:10 day:4 category:events count:5` | 查詢指定月日；`month` 與 `day` 必須一起指定。 |
+| `/today category:random count:random5` | 隨機選擇有資料的分類，再抽出最多 5 筆不重複資料。 |
 | `/daily channel:#歷史上的今天 hour:9 minute:0 timezone:Asia/Taipei category:events count:5` | 在目前伺服器設定每天自動推送；只有 `channel` 為必填。 |
 | `/daily-status` | 查看目前伺服器的推送設定。 |
 | `/daily-off` | 關閉目前伺服器的推送並刪除設定及發送紀錄。 |
 | `/history-help` | 查看完整使用說明。 |
 
-`category` 可選 `events`（大事記）、`births`（出生）、`deaths`（逝世）、`holidays`（節日）；`count` 為 1–10，預設 5。`hour` 採 24 小時制（0–23），`minute` 為 0–59；未指定時預設每天 09:00。`timezone` 使用 IANA 名稱，例如 `Asia/Taipei`、`Asia/Hong_Kong` 或 `America/New_York`，未指定時沿用 `history_today.timezone`。設定、查看或關閉每日推送需要「管理伺服器」權限；Bot 在目標文字頻道需要檢視頻道、發送訊息與嵌入連結權限。
+`category` 可選 `events`（大事記）、`births`（出生）、`deaths`（逝世）、`holidays`（節日）或 `random`（隨機分類）；`count` 可選 1–10 筆（預設 5）或 `random5`（隨機抽 5 筆，資料不足時顯示全部）。兩種隨機選項可分開使用，也適用於 `/daily`，每日推送時會重新抽選。`hour` 採 24 小時制（0–23），`minute` 為 0–59；未指定時預設每天 09:00。`timezone` 使用 IANA 名稱，例如 `Asia/Taipei`、`Asia/Hong_Kong` 或 `America/New_York`，未指定時沿用 `history_today.timezone`。設定、查看或關閉每日推送需要「管理伺服器」權限；Bot 在目標文字頻道需要檢視頻道、發送訊息與嵌入連結權限。
 
 `config/bot.json` 的 `history_today.enabled` 設為 `false` 可停用此 Cog，`history_today.timezone` 設定預設時區；修改後需重啟 Bot。資料取自中文維基百科並請求繁體內容，查詢訊息會附原始來源連結；不使用 AI 生成歷史資料。此功能由 [dc-history-bot](https://github.com/steventeng2022/dc-history-bot) 的查詢、排程與格式化程式整合而來。
 
@@ -165,7 +196,9 @@ Discord SDK 由專案內的 `/activity/discord-sdk.js` 提供，避免 Discord �
 
 此模式預設停用，且設定後 Web server 必須綁定 `127.0.0.1`；不要透過反向代理、Tunnel 或 Docker 公開埠提供此測試頁。Standalone OAuth callback 和 OAuth state 僅供本機登入，與 Activity 使用的 `https://127.0.0.1` placeholder 不同。
 
-各伺服器的資源文件與 Draft 儲存在 `data/database/{guild_id}.db`。正式資源訊息會直接以 Markdown 文字呈現，每份文件必須不超過 2,000 字元。Bot 啟動時及核准後只會以 Database 內容更新五份現役文件的原有訊息；若現役訊息曾被人工修改，可由管理員執行 `/resource_sync` 還原，不會將 Discord 內容寫回 Database。已停用的「活動資訊分享」訊息不再同步。
+各伺服器的資源文件與 Draft 儲存在 `data/database/{guild_id}.db`。Activity 可編輯最多 20,000 字元的完整 Markdown；長度依 UTF-16 計算，與瀏覽器一致，部分 emoji 會計為兩個字元。核准後自動拆成每則最多 2,000 字元的 Discord 訊息，優先沿段落及換行分段，保存的文件與審核原文不會截斷或重複。超長單行／單一 Markdown 構造仍會切開，因此跨訊息的程式碼區塊等排版不保證完全相同；無法無損發布的超長純空白區段會回報驗證錯誤。
+
+Bot 啟動時及核准後以 Database 內容更新五份現役文件的原有訊息，內容變長時新增後續段、變短時刪除多餘段；任一中間段遺失會重建該段與後續段以維持閱讀順序。舊單則訊息會保留相容追蹤。人工修改不會寫回 Database，可執行 `/resource_sync` 還原。部分發布失敗時核准版本仍保存在 Database，但不會回報整份已發布；已追蹤的成功段落可供重試沿用。Discord 傳送結果未知或程序在訊息 ID 保存前中斷時，不能保證完全沒有未追蹤訊息。已停用的「活動資訊分享」訊息不再同步。
 
 ---
 

@@ -53,4 +53,12 @@ def test_search_failure_returns_empty_results(monkeypatch):
 
     monkeypatch.setattr("bot.utils.web_search.urlopen", fake_urlopen)
 
-    assert SearxngSearch("http://search.local").search("test") == []
+    search = SearxngSearch("http://search.local")
+    assert search.search("test") == []
+    assert search.search_result("test").status == "error"
+
+
+def test_search_empty_and_unavailable_are_distinct(monkeypatch):
+    monkeypatch.setattr("bot.utils.web_search.urlopen", lambda *args, **kwargs: FakeResponse({"results": []}))
+    assert SearxngSearch("http://search.local").search_result("test").status == "no_hits"
+    assert SearxngSearch("").search_result("test").status == "unavailable"

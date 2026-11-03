@@ -7,6 +7,7 @@ import os
 import json
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from .utils.config import Settings
@@ -104,6 +105,7 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
                         bot,
                         _GLOBAL_FALLBACK_COMMANDS,
                     )
+                    sync_statuses.update(await _sync_missing_global_commands(bot))
                 except Exception:
                     bot.logger.exception(
                         "Targeted command sync failed after global sync was rejected; "
@@ -153,11 +155,32 @@ def _normalize_app_command_option(option: object) -> dict[str, object]:
     return normalized
 
 
-async def _sync_global_chat_input_command(
+def _find_local_command(
     bot: commands.Bot,
     command_name: str,
+) -> app_commands.Command | app_commands.ContextMenu | None:
+    for cmd_type in (
+        discord.AppCommandType.chat_input,
+        discord.AppCommandType.message,
+        discord.AppCommandType.user,
+    ):
+        cmd = bot.tree.get_command(command_name, type=cmd_type)
+        if cmd is not None:
+            return cmd
+    return None
+
+
+async def _sync_global_single_command(
+    bot: commands.Bot,
+    command_name: str,
+    *,
+    command_type: discord.AppCommandType | None = None,
 ) -> str:
-    local_command = bot.tree.get_command(command_name)
+    local_command = (
+        _find_local_command(bot, command_name)
+        if command_type is None
+        else bot.tree.get_command(command_name, type=command_type)
+    )
     if local_command is None:
         return "local command unavailable"
 
@@ -167,6 +190,8 @@ async def _sync_global_chat_input_command(
     else:
         local_payload = await local_command.get_translated_payload(bot.tree, translator)
 
+    expected_type = _local_command_type(local_command)
+
     # Read the raw payload so zero-based contexts are compared accurately.
     # Some discord.py versions lose the guild context while parsing it.
     remote_commands = await bot.http.get_global_commands(bot.application_id)
@@ -175,10 +200,16 @@ async def _sync_global_chat_input_command(
             command
             for command in remote_commands
             if command["name"] == command_name
-            and command.get("type", 1) == discord.AppCommandType.chat_input.value
+            and command.get("type", 1) == expected_type.value
         ),
         None,
     )
+
+    if expected_type != discord.AppCommandType.chat_input:
+        if remote_command is not None:
+            return "already matches"
+        await bot.http.upsert_global_command(bot.application_id, local_payload)
+        return "created"
 
     desired_description = local_payload["description"]
     desired_options = local_payload.get("options", [])
@@ -225,6 +256,32 @@ async def _sync_global_chat_input_command(
 
     await bot.http.upsert_global_command(bot.application_id, local_payload)
     return "created"
+
+
+def _local_command_type(command: object) -> discord.AppCommandType:
+    return getattr(command, "type", discord.AppCommandType.chat_input)
+
+
+async def _sync_missing_global_commands(bot: commands.Bot) -> dict[str, str]:
+    remote_commands = await bot.tree.fetch_commands()
+    remote_keys = {(command.name, command.type) for command in remote_commands}
+    statuses: dict[str, str] = {}
+    for local_command in bot.tree.get_commands():
+        if (local_command.name, _local_command_type(local_command)) in remote_keys:
+            continue
+        statuses[local_command.name] = await _sync_global_single_command(
+            bot,
+            local_command.name,
+            command_type=_local_command_type(local_command),
+        )
+    return statuses
+
+
+async def _sync_global_chat_input_command(
+    bot: commands.Bot,
+    command_name: str,
+) -> str:
+    return await _sync_global_single_command(bot, command_name)
 
 
 async def _sync_global_commands(

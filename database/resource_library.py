@@ -46,6 +46,23 @@ class ResourceRepository:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS resource_document_messages (
+                    slug TEXT NOT NULL REFERENCES resource_documents(slug) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK (position >= 0),
+                    message_id INTEGER NOT NULL UNIQUE CHECK (message_id > 0),
+                    PRIMARY KEY (slug, position)
+                );
+
+                INSERT INTO resource_document_messages (slug, position, message_id)
+                SELECT document.slug, 0, document.message_id
+                FROM resource_documents AS document
+                WHERE document.message_id IS NOT NULL
+                  AND document.message_id > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM resource_document_messages AS message
+                      WHERE message.slug = document.slug
+                  );
+
                 CREATE TABLE IF NOT EXISTS resource_drafts (
                     id TEXT PRIMARY KEY,
                     document_slug TEXT NOT NULL REFERENCES resource_documents(slug),
@@ -86,53 +103,60 @@ class ResourceRepository:
         now = _utc_now()
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
-            for document in documents:
-                existing = await (
-                    await db.execute(
-                        "SELECT channel_id, message_id FROM resource_documents WHERE slug = ?",
-                        (document["slug"],),
-                    )
-                ).fetchone()
-                if existing and int(existing["channel_id"]) != int(document["channel_id"]):
-                    if existing["message_id"] is not None:
-                        raise ValueError(
-                            f"{document['title']} 已有正式訊息，不能直接更換頻道。"
+            try:
+                for document in documents:
+                    existing = await (
+                        await db.execute(
+                            "SELECT channel_id, message_id FROM resource_documents WHERE slug = ?",
+                            (document["slug"],),
                         )
-                    await db.execute(
-                        "UPDATE resource_documents SET channel_id = ?, title = ? WHERE slug = ?",
-                        (int(document["channel_id"]), document["title"], document["slug"]),
-                    )
-                elif existing:
-                    await db.execute(
-                        "UPDATE resource_documents SET title = ? WHERE slug = ?",
-                        (document["title"], document["slug"]),
-                    )
-                else:
-                    await db.execute(
-                        """
-                        INSERT INTO resource_documents
-                            (slug, title, channel_id, message_id, content_md, version, updated_by, updated_at)
-                        VALUES (?, ?, ?, NULL, ?, 1, 'system', ?)
-                        """,
-                        (
-                            document["slug"],
-                            document["title"],
-                            int(document["channel_id"]),
-                            f"# {document['title']}\n\n",
-                            now,
-                        ),
-                    )
-            await db.execute(
-                """
-                INSERT INTO resource_workflow_settings(singleton, review_channel_id, notification_role_id)
-                VALUES (1, ?, ?)
-                ON CONFLICT(singleton) DO UPDATE SET
-                    review_channel_id = excluded.review_channel_id,
-                    notification_role_id = excluded.notification_role_id
-                """,
-                (int(review_channel_id), int(notification_role_id)),
-            )
-            await db.commit()
+                    ).fetchone()
+                    if existing and int(existing["channel_id"]) != int(document["channel_id"]):
+                        current_message_ids = await _document_message_ids(
+                            db, document["slug"], existing["message_id"]
+                        )
+                        if current_message_ids:
+                            raise ValueError(
+                                f"{document['title']} 已有正式訊息，不能直接更換頻道。"
+                            )
+                        await db.execute(
+                            "UPDATE resource_documents SET channel_id = ?, title = ? WHERE slug = ?",
+                            (int(document["channel_id"]), document["title"], document["slug"]),
+                        )
+                    elif existing:
+                        await db.execute(
+                            "UPDATE resource_documents SET title = ? WHERE slug = ?",
+                            (document["title"], document["slug"]),
+                        )
+                    else:
+                        await db.execute(
+                            """
+                            INSERT INTO resource_documents
+                                (slug, title, channel_id, message_id, content_md, version, updated_by, updated_at)
+                            VALUES (?, ?, ?, NULL, ?, 1, 'system', ?)
+                            """,
+                            (
+                                document["slug"],
+                                document["title"],
+                                int(document["channel_id"]),
+                                f"# {document['title']}\n\n",
+                                now,
+                            ),
+                        )
+                await db.execute(
+                    """
+                    INSERT INTO resource_workflow_settings(singleton, review_channel_id, notification_role_id)
+                    VALUES (1, ?, ?)
+                    ON CONFLICT(singleton) DO UPDATE SET
+                        review_channel_id = excluded.review_channel_id,
+                        notification_role_id = excluded.notification_role_id
+                    """,
+                    (int(review_channel_id), int(notification_role_id)),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def get_workflow_settings(self) -> dict[str, int] | None:
         async with self._connect() as db:
@@ -151,16 +175,38 @@ class ResourceRepository:
 
     async def list_documents(self) -> list[dict[str, Any]]:
         async with self._connect() as db:
+            await db.execute("BEGIN")
             rows = await (
                 await db.execute(
                     "SELECT slug, title, channel_id, message_id, content_md, version, updated_by, updated_at "
                     "FROM resource_documents ORDER BY rowid"
                 )
             ).fetchall()
-        return [dict(row) for row in rows]
+            message_rows = await (
+                await db.execute(
+                    "SELECT slug, message_id FROM resource_document_messages "
+                    "ORDER BY slug, position"
+                )
+            ).fetchall()
+        messages_by_slug: dict[str, list[int]] = {}
+        for message_row in message_rows:
+            messages_by_slug.setdefault(str(message_row["slug"]), []).append(
+                int(message_row["message_id"])
+            )
+        documents = []
+        for row in rows:
+            document = dict(row)
+            message_ids = messages_by_slug.get(str(row["slug"]), [])
+            if not message_ids and row["message_id"] is not None:
+                message_ids = [int(row["message_id"])]
+            document["message_ids"] = message_ids
+            document["message_id"] = message_ids[0] if message_ids else None
+            documents.append(document)
+        return documents
 
     async def get_document(self, slug: str) -> dict[str, Any] | None:
         async with self._connect() as db:
+            await db.execute("BEGIN")
             row = await (
                 await db.execute(
                     "SELECT slug, title, channel_id, message_id, content_md, version, updated_by, updated_at "
@@ -168,32 +214,161 @@ class ResourceRepository:
                     (slug,),
                 )
             ).fetchone()
-        return dict(row) if row else None
+            if row is None:
+                return None
+            document = dict(row)
+            message_ids = await _document_message_ids(db, slug, row["message_id"])
+        document["message_ids"] = message_ids
+        document["message_id"] = message_ids[0] if message_ids else None
+        return document
+
+    async def set_message_ids(
+        self,
+        slug: str,
+        message_ids: list[int],
+        *,
+        expected_channel_id: int,
+        expected_version: int,
+        expected_message_ids: list[int],
+    ) -> None:
+        new_message_ids = _validate_message_ids(message_ids, "message_ids")
+        expected_ids = _validate_message_ids(expected_message_ids, "expected_message_ids")
+        expected_channel = _validate_positive_integer(
+            expected_channel_id, "expected_channel_id"
+        )
+        expected_version_value = _validate_positive_integer(
+            expected_version, "expected_version"
+        )
+
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (
+                    await db.execute(
+                        "SELECT channel_id, message_id, version FROM resource_documents WHERE slug = ?",
+                        (slug,),
+                    )
+                ).fetchone()
+                if row is None:
+                    raise KeyError(slug)
+                current_ids = await _document_message_ids(db, slug, row["message_id"])
+                if (
+                    int(row["channel_id"]) != expected_channel
+                    or int(row["version"]) != expected_version_value
+                    or current_ids != expected_ids
+                ):
+                    raise ValueError(
+                        f"{slug} 的頻道、版本或訊息已變更，請重新載入後再提交。"
+                    )
+                await _replace_document_message_ids(db, slug, new_message_ids)
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def set_message_id(self, slug: str, message_id: int) -> None:
+        new_message_id = _validate_positive_integer(message_id, "message_id")
         async with self._connect() as db:
-            await db.execute(
-                "UPDATE resource_documents SET message_id = ? WHERE slug = ?",
-                (int(message_id), slug),
-            )
-            await db.commit()
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (
+                    await db.execute(
+                        "SELECT message_id FROM resource_documents WHERE slug = ?",
+                        (slug,),
+                    )
+                ).fetchone()
+                if row is None:
+                    await db.commit()
+                    return
+                current_ids = await _document_message_ids(db, slug, row["message_id"])
+                if len(current_ids) > 1:
+                    if current_ids[0] != new_message_id:
+                        raise ValueError(
+                            f"{slug} 已有多筆正式訊息，不能只更新第一筆訊息 ID。"
+                        )
+                    await db.execute(
+                        "UPDATE resource_documents SET message_id = ? WHERE slug = ?",
+                        (new_message_id, slug),
+                    )
+                else:
+                    await _replace_document_message_ids(db, slug, [new_message_id])
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def migrate_document_messages(
         self, migrations: list[dict[str, Any]]
     ) -> None:
         if not migrations:
             raise ValueError("至少需要一份文件遷移設定。")
-        target_channels = [int(item["channel_id"]) for item in migrations]
-        target_messages = [int(item["message_id"]) for item in migrations]
+
+        prepared: list[dict[str, Any]] = []
+        target_channels: list[int] = []
+        target_message_ids: list[int] = []
+        seen_slugs: set[str] = set()
+        for migration in migrations:
+            slug = str(migration["slug"])
+            if slug in seen_slugs:
+                raise ValueError("同一份資源文件不能在單次遷移中重複出現。")
+            seen_slugs.add(slug)
+            expected_channel = _validate_positive_integer(
+                migration["expected_channel_id"], "expected_channel_id"
+            )
+            expected_version = _validate_positive_integer(
+                migration["expected_version"], "expected_version"
+            )
+            target_channel = _validate_positive_integer(
+                migration["channel_id"], "channel_id"
+            )
+            has_expected_ids = "expected_message_ids" in migration
+            has_target_ids = "message_ids" in migration
+            if has_expected_ids != has_target_ids:
+                raise ValueError(
+                    "多訊息遷移必須同時提供 expected_message_ids 與 message_ids。"
+                )
+            if has_expected_ids:
+                expected_ids = _validate_message_ids(
+                    migration["expected_message_ids"], "expected_message_ids"
+                )
+                new_message_ids = _validate_message_ids(
+                    migration["message_ids"], "message_ids"
+                )
+            else:
+                if "expected_message_id" not in migration or "message_id" not in migration:
+                    raise ValueError("單訊息遷移必須提供 expected_message_id 與 message_id。")
+                expected_message_id = migration["expected_message_id"]
+                expected_ids = (
+                    []
+                    if expected_message_id is None
+                    else [_validate_positive_integer(expected_message_id, "expected_message_id")]
+                )
+                new_message_ids = [
+                    _validate_positive_integer(migration["message_id"], "message_id")
+                ]
+            target_channels.append(target_channel)
+            target_message_ids.extend(new_message_ids)
+            prepared.append(
+                {
+                    "slug": slug,
+                    "expected_channel_id": expected_channel,
+                    "expected_version": expected_version,
+                    "expected_message_ids": expected_ids,
+                    "has_complete_message_ids": has_expected_ids,
+                    "channel_id": target_channel,
+                    "message_ids": new_message_ids,
+                }
+            )
+
         if len(set(target_channels)) != len(target_channels):
             raise ValueError("資源文件遷移目標頻道必須彼此不同。")
-        if len(set(target_messages)) != len(target_messages):
+        if len(set(target_message_ids)) != len(target_message_ids):
             raise ValueError("資源文件遷移目標訊息 ID 必須彼此不同。")
 
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
-                for migration in migrations:
+                for migration in prepared:
                     row = await (
                         await db.execute(
                             "SELECT channel_id, message_id, version FROM resource_documents WHERE slug = ?",
@@ -202,30 +377,46 @@ class ResourceRepository:
                     ).fetchone()
                     if row is None:
                         raise KeyError(migration["slug"])
-                    current_message_id = (
-                        int(row["message_id"]) if row["message_id"] is not None else None
+                    current_ids = await _document_message_ids(
+                        db, migration["slug"], row["message_id"]
                     )
-                    expected_message_id = migration["expected_message_id"]
-                    if expected_message_id is not None:
-                        expected_message_id = int(expected_message_id)
+                    if len(current_ids) > 1 and not migration["has_complete_message_ids"]:
+                        raise ValueError(
+                            f"{migration['slug']} 有多筆正式訊息，遷移時必須提供完整訊息 ID 清單。"
+                        )
                     if (
-                        int(row["channel_id"]) != int(migration["expected_channel_id"])
-                        or current_message_id != expected_message_id
-                        or int(row["version"]) != int(migration["expected_version"])
+                        int(row["channel_id"]) != migration["expected_channel_id"]
+                        or current_ids != migration["expected_message_ids"]
+                        or int(row["version"]) != migration["expected_version"]
                     ):
                         raise ValueError(
                             f"{migration['slug']} 的頻道或訊息已變更，取消遷移以避免覆蓋新資料。"
                         )
+
+                for migration in prepared:
+                    await db.execute(
+                        "DELETE FROM resource_document_messages WHERE slug = ?",
+                        (migration["slug"],),
+                    )
+                for migration in prepared:
+                    message_ids = migration["message_ids"]
                     await db.execute(
                         "UPDATE resource_documents SET channel_id = ?, message_id = ? WHERE slug = ?",
                         (
-                            int(migration["channel_id"]),
-                            int(migration["message_id"]),
+                            migration["channel_id"],
+                            message_ids[0] if message_ids else None,
                             migration["slug"],
                         ),
                     )
+                    await db.executemany(
+                        "INSERT INTO resource_document_messages (slug, position, message_id) VALUES (?, ?, ?)",
+                        [
+                            (migration["slug"], position, message_id)
+                            for position, message_id in enumerate(message_ids)
+                        ],
+                    )
                 await db.commit()
-            except Exception:
+            except BaseException:
                 await db.rollback()
                 raise
 
@@ -407,6 +598,53 @@ class ResourceRepository:
 
         document = await self.get_document(str(row["document_slug"]))
         return {"status": status, "draft": await self.get_draft(draft_id), "document": document}
+
+
+async def _document_message_ids(
+    db: aiosqlite.Connection, slug: str, legacy_message_id: int | None
+) -> list[int]:
+    rows = await (
+        await db.execute(
+            "SELECT message_id FROM resource_document_messages WHERE slug = ? ORDER BY position",
+            (slug,),
+        )
+    ).fetchall()
+    if rows:
+        return [int(row["message_id"]) for row in rows]
+    if legacy_message_id is not None:
+        return [int(legacy_message_id)]
+    return []
+
+
+async def _replace_document_message_ids(
+    db: aiosqlite.Connection, slug: str, message_ids: list[int]
+) -> None:
+    await db.execute("DELETE FROM resource_document_messages WHERE slug = ?", (slug,))
+    await db.executemany(
+        "INSERT INTO resource_document_messages (slug, position, message_id) VALUES (?, ?, ?)",
+        [(slug, position, message_id) for position, message_id in enumerate(message_ids)],
+    )
+    await db.execute(
+        "UPDATE resource_documents SET message_id = ? WHERE slug = ?",
+        (message_ids[0] if message_ids else None, slug),
+    )
+
+
+def _validate_positive_integer(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} 必須是正整數。")
+    return value
+
+
+def _validate_message_ids(values: Any, field_name: str) -> list[int]:
+    if not isinstance(values, list):
+        raise ValueError(f"{field_name} 必須是整數清單。")
+    message_ids = [
+        _validate_positive_integer(message_id, field_name) for message_id in values
+    ]
+    if len(set(message_ids)) != len(message_ids):
+        raise ValueError(f"{field_name} 不可包含重複訊息 ID。")
+    return message_ids
 
 
 def _utc_now() -> str:

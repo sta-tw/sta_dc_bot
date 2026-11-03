@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import re
+import unicodedata
+from bisect import bisect_right
 from difflib import unified_diff
 from html import unescape
 from typing import Any
+
+
+MAX_MARKDOWN_CHARS = 20_000
+MAX_DISCORD_MESSAGE_CHARS = 2_000
 
 
 _HEADING_RE = re.compile(r"^(?P<prefix>#{1,6}[ \t]+)(?P<title>.*?)(?P<trailing>[ \t]*)$")
@@ -374,3 +380,322 @@ def markdown_diff(before_md: str, after_md: str) -> str:
             lineterm="",
         )
     )
+
+
+_INLINE_LINK_FRAGMENT_RE = re.compile(
+    r"\[(?:\\.|[^\]\r\n])*\]\((?:<[^>\r\n]*>|[^)\r\n]*)\)"
+)
+
+
+def utf16_length(text: str) -> int:
+    if not isinstance(text, str):
+        raise TypeError("文字長度只能計算字串。")
+    try:
+        return len(text.encode("utf-16-le", errors="strict")) // 2
+    except UnicodeEncodeError as error:
+        raise ValueError("文字含有無效 Unicode 代理字元。") from error
+
+
+def _utf16_prefix_lengths(text: str) -> list[int]:
+    lengths = [0]
+    total = 0
+    for character in text:
+        codepoint = ord(character)
+        if 0xD800 <= codepoint <= 0xDFFF:
+            raise ValueError("Markdown 含有無效 Unicode 代理字元。")
+        total += 2 if codepoint > 0xFFFF else 1
+        lengths.append(total)
+    return lengths
+
+
+def _markdown_line_spans(content_md: str) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    start = 0
+    fence: tuple[str, int] | None = None
+    while start < len(content_md):
+        newline_start = start
+        while newline_start < len(content_md) and content_md[newline_start] not in "\r\n":
+            newline_start += 1
+        if newline_start == len(content_md):
+            end = newline_start
+            newline = ""
+        elif content_md[newline_start] == "\r" and content_md[newline_start : newline_start + 2] == "\r\n":
+            end = newline_start + 2
+            newline = "\r\n"
+        else:
+            end = newline_start + 1
+            newline = content_md[newline_start:end]
+
+        body = content_md[start:newline_start]
+        inside_fence = fence is not None
+        if fence is not None:
+            marker, minimum_length = fence
+            if re.fullmatch(rf" {{0,3}}{re.escape(marker)}{{{minimum_length},}}[ \t]*", body):
+                fence = None
+        else:
+            match = _FENCE_RE.match(body)
+            if match:
+                marker = match.group(1)
+                fence = (marker[0], len(marker))
+
+        lines.append(
+            {
+                "start": start,
+                "end": end,
+                "body": body,
+                "newline": newline,
+                "inside_fence": inside_fence,
+                "outside_fence_after": fence is None,
+                "paragraph_break": not body.strip(),
+            }
+        )
+        start = end
+    return lines
+
+
+def _safe_split_boundary(text: str, index: int) -> bool:
+    if index <= 0 or index >= len(text):
+        return True
+    previous = text[index - 1]
+    current = text[index]
+    if previous == "\r" and current == "\n":
+        return False
+    if previous == "‍" or current == "‍":
+        return False
+    if unicodedata.category(current).startswith("M"):
+        return False
+    current_codepoint = ord(current)
+    if 0x1F3FB <= current_codepoint <= 0x1F3FF:
+        return False
+    if 0xE0020 <= current_codepoint <= 0xE007F:
+        return False
+    if 0x1F1E6 <= ord(previous) <= 0x1F1FF and 0x1F1E6 <= current_codepoint <= 0x1F1FF:
+        regional_count = 0
+        cursor = index - 1
+        while cursor >= 0 and 0x1F1E6 <= ord(text[cursor]) <= 0x1F1FF:
+            regional_count += 1
+            cursor -= 1
+        if regional_count % 2:
+            return False
+    return True
+
+
+def _protected_markdown_spans(content_md: str, prefix_lengths: list[int], max_chars: int) -> list[tuple[int, int]]:
+    spans = sorted(
+        (match.start(), match.end())
+        for pattern in (_INLINE_CODE_RE, _INLINE_LINK_FRAGMENT_RE)
+        for match in pattern.finditer(content_md)
+        if prefix_lengths[match.end()] - prefix_lengths[match.start()] <= max_chars
+    )
+    merged: list[tuple[int, int]] = []
+    for span_start, span_end in spans:
+        if merged and span_start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], span_end))
+        else:
+            merged.append((span_start, span_end))
+    return merged
+
+
+def _inside_protected_span(index: int, spans: list[tuple[int, int]], starts: list[int]) -> bool:
+    span_index = bisect_right(starts, index) - 1
+    return span_index >= 0 and spans[span_index][0] < index < spans[span_index][1]
+
+
+def _next_nonblank_positions(text: str) -> list[int]:
+    positions = [len(text)] * (len(text) + 1)
+    next_position = len(text)
+    for index in range(len(text) - 1, -1, -1):
+        if not text[index].isspace():
+            next_position = index
+        positions[index] = next_position
+    return positions
+
+
+def _has_nonblank_within_limit(
+    start: int,
+    prefix_lengths: list[int],
+    next_nonblank: list[int],
+    max_chars: int,
+) -> bool:
+    end = bisect_right(prefix_lengths, prefix_lengths[start] + max_chars) - 1
+    return next_nonblank[start] < end
+
+
+def _choose_split_candidate(
+    candidates: list[int],
+    content_md: str,
+    prefix_lengths: list[int],
+    next_nonblank: list[int],
+    max_chars: int,
+) -> int | None:
+    for boundary in sorted(set(candidates), reverse=True):
+        if _safe_split_boundary(content_md, boundary) and _has_nonblank_within_limit(
+            boundary, prefix_lengths, next_nonblank, max_chars
+        ):
+            return boundary
+    return None
+
+
+def _reserve_nonblank_cut(
+    content_md: str,
+    start: int,
+    hard_end: int,
+    prefix_lengths: list[int],
+    next_nonblank: list[int],
+    max_chars: int,
+) -> int:
+    boundary = hard_end - 1
+    while boundary >= start and content_md[boundary].isspace():
+        boundary -= 1
+    while boundary > start and not _safe_split_boundary(content_md, boundary):
+        boundary -= 1
+    if (
+        boundary <= start
+        or not content_md[start:boundary].strip()
+        or not _has_nonblank_within_limit(boundary, prefix_lengths, next_nonblank, max_chars)
+    ):
+        raise ValueError("Markdown 無法拆分成非空白的 Discord 訊息。")
+    return boundary
+
+
+def split_resource_markdown(
+    content_md: str,
+    max_chars: int = MAX_DISCORD_MESSAGE_CHARS,
+) -> list[str]:
+    if not isinstance(content_md, str):
+        raise ValueError("Markdown 內容必須是文字。")
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1 <= max_chars <= MAX_MARKDOWN_CHARS:
+        raise ValueError(f"單則訊息字元上限必須介於 1 至 {MAX_MARKDOWN_CHARS}。")
+    total_chars = utf16_length(content_md)
+    if total_chars > MAX_MARKDOWN_CHARS:
+        raise ValueError(f"Markdown 不可超過 {MAX_MARKDOWN_CHARS:,} 個 UTF-16 字元。")
+    if not content_md:
+        return []
+    if not content_md.strip():
+        raise ValueError("Markdown 無法拆分成非空白的 Discord 訊息。")
+
+    prefix_lengths = _utf16_prefix_lengths(content_md)
+    next_nonblank = _next_nonblank_positions(content_md)
+    lines = _markdown_line_spans(content_md)
+    line_starts = [line["start"] for line in lines]
+    protected_spans = _protected_markdown_spans(content_md, prefix_lengths, max_chars)
+    protected_starts = [span[0] for span in protected_spans]
+    chunks: list[str] = []
+    start = 0
+
+    while start < len(content_md):
+        remaining_chars = prefix_lengths[-1] - prefix_lengths[start]
+        if remaining_chars <= max_chars:
+            final_part = content_md[start:]
+            if not final_part.strip():
+                raise ValueError("Markdown 無法拆分成非空白的 Discord 訊息。")
+            chunks.append(final_part)
+            break
+
+        target = prefix_lengths[start] + max_chars
+        hard_end = bisect_right(prefix_lengths, target) - 1
+        if hard_end <= start:
+            raise ValueError("字元上限不足以容納下一個 Unicode 字元。")
+        safe_end = hard_end
+        while safe_end > start and not _safe_split_boundary(content_md, safe_end):
+            safe_end -= 1
+        if safe_end > start:
+            hard_end = safe_end
+
+        line_candidates: list[int] = []
+        paragraph_candidates: list[int] = []
+        first_line = max(0, bisect_right(line_starts, start) - 1)
+        start_line_index = bisect_right(line_starts, start) - 1
+        starts_inside_fence = (
+            start_line_index >= 0 and lines[start_line_index]["inside_fence"]
+        )
+        line_index = first_line
+        while line_index < len(lines):
+            line = lines[line_index]
+            line_index += 1
+            boundary = line["end"]
+            if boundary <= start:
+                continue
+            if boundary > hard_end:
+                break
+            if not line["newline"] or not _safe_split_boundary(content_md, boundary):
+                continue
+            if _inside_protected_span(boundary, protected_spans, protected_starts):
+                continue
+            if not (line["outside_fence_after"] or starts_inside_fence):
+                continue
+            if not content_md[start:boundary].strip():
+                continue
+            line_candidates.append(boundary)
+            if line["paragraph_break"]:
+                paragraph_candidates.append(boundary)
+
+        split_at = _choose_split_candidate(
+            paragraph_candidates,
+            content_md,
+            prefix_lengths,
+            next_nonblank,
+            max_chars,
+        )
+        if split_at is None:
+            split_at = _choose_split_candidate(
+                line_candidates,
+                content_md,
+                prefix_lengths,
+                next_nonblank,
+                max_chars,
+            )
+
+        if split_at is None:
+            structural_candidates: list[int] = []
+            first_span = max(0, bisect_right(protected_starts, start) - 1)
+            while first_span < len(protected_spans):
+                span_start, span_end = protected_spans[first_span]
+                first_span += 1
+                if span_start > hard_end:
+                    break
+                if span_start >= start and start < span_start <= hard_end:
+                    structural_candidates.append(span_start)
+                if span_end > start and span_end <= hard_end:
+                    structural_candidates.append(span_end)
+
+            for boundary in range(start + 1, hard_end + 1):
+                if not _safe_split_boundary(content_md, boundary):
+                    continue
+                if not content_md[boundary - 1].isspace():
+                    continue
+                if _inside_protected_span(boundary, protected_spans, protected_starts):
+                    continue
+                if content_md[start:boundary].strip():
+                    structural_candidates.append(boundary)
+
+            split_at = _choose_split_candidate(
+                structural_candidates,
+                content_md,
+                prefix_lengths,
+                next_nonblank,
+                max_chars,
+            )
+        if split_at is None and _has_nonblank_within_limit(
+            hard_end, prefix_lengths, next_nonblank, max_chars
+        ):
+            split_at = hard_end
+        if split_at is None:
+            split_at = _reserve_nonblank_cut(
+                content_md,
+                start,
+                hard_end,
+                prefix_lengths,
+                next_nonblank,
+                max_chars,
+            )
+
+        part = content_md[start:split_at]
+        if not part or not part.strip():
+            raise ValueError("Markdown 無法拆分成非空白的 Discord 訊息。")
+        chunks.append(part)
+        start = split_at
+
+    if "".join(chunks) != content_md:
+        raise RuntimeError("Markdown 拆分未能保留完整原文。")
+    return chunks

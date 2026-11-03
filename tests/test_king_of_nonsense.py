@@ -234,72 +234,146 @@ async def test_boundary_is_installed_before_database_is_exposed(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_prepare_retry_keeps_boundary_token_and_live_counts(tmp_path, monkeypatch):
+async def test_concurrent_preparation_only_begins_once_and_preserves_live_counts(tmp_path, monkeypatch):
     db = await database(tmp_path)
     instance = cog()
-    guild = SimpleNamespace(id=1)
+    guild = SimpleNamespace(id=1, name="guild")
+    upper = boundary_id(discord.utils.utcnow())
+    next_boundary = Mock(return_value=upper)
+    db.begin_message_history_seed = AsyncMock(wraps=db.begin_message_history_seed)
     monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(king, "next_boundary_id", lambda: 100)
-    await instance._prepare_history_seed(guild, db)
+    monkeypatch.setattr(king, "next_boundary_id", next_boundary)
+    monkeypatch.setattr(king, "discover_scope", AsyncMock())
+    monkeypatch.setattr(king, "collect_history", AsyncMock())
+    await asyncio.gather(*(instance._prepare_history_seed(guild, db) for _ in range(4)))
     token = instance._seed_tokens[1]
-    await db.increment_message_count(2, 3)
-    monkeypatch.setattr(king, "next_boundary_id", lambda: 200)
+    db.begin_message_history_seed.assert_awaited_once_with(token, upper, allow_legacy_reseed=False)
+    next_boundary.assert_called_once_with()
+    assert instance._history_cutoffs[1] == upper
+    assert instance._snapshots[1] is None
+    await db.increment_message_count(2, 2)
     await instance._prepare_history_seed(guild, db)
-    assert instance._history_cutoffs[1] == 100
     assert instance._seed_tokens[1] == token
-    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 3}]
+    assert db.begin_message_history_seed.await_count == 1
+    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 2}]
+    king.discover_scope.assert_not_awaited()
+    king.collect_history.assert_not_awaited()
+    assert not instance._seed_tasks
 
 
 @pytest.mark.asyncio
-async def test_snapshot_reseeds_legacy_counts_and_preserves_new_messages(tmp_path, monkeypatch):
+async def test_valid_snapshot_prepares_legacy_upgrade_and_merges_live_counts(tmp_path, monkeypatch):
     db = await database(tmp_path)
-    await db.set_message_history_seeded(True)
     await db.increment_message_count(2, 99)
-    snapshot = write_snapshot(
-        tmp_path / "leaderboard_preloads" / "1.json",
-        HistoryScope(1, [SimpleNamespace(id=11)]),
-        boundary_id(discord.utils.utcnow() - timedelta(days=1)),
-        Counter({2: 4}),
-    )
+    await db.set_message_history_seeded(True)
     instance = cog()
     guild = SimpleNamespace(id=1, name="guild")
+    lower = boundary_id(discord.utils.utcnow() - timedelta(days=1))
     upper = boundary_id(discord.utils.utcnow() - timedelta(seconds=1))
+    scope = HistoryScope(1, [SimpleNamespace(id=11)])
+    snapshot_path = tmp_path / "leaderboard_preloads" / "1.json"
+    snapshot = write_snapshot(snapshot_path, scope, lower, Counter({2: 3, 3: 4}))
+    snapshot_bytes = snapshot_path.read_bytes()
     monkeypatch.setattr(king, "DatabaseManager", lambda *args: db)
     monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
     monkeypatch.setattr(king, "next_boundary_id", lambda: upper)
-    monkeypatch.setattr(king, "discover_scope", AsyncMock(return_value=HistoryScope(1)))
-    collect = AsyncMock(return_value=Counter({2: 6}))
-    monkeypatch.setattr(king, "collect_history", collect)
-    await instance.on_message(SimpleNamespace(id=upper, guild=guild,
-        author=SimpleNamespace(id=2, bot=False), webhook_id=None))
+    monkeypatch.setattr(king, "discover_scope", AsyncMock(return_value=scope))
+    monkeypatch.setattr(king, "collect_history", AsyncMock(return_value=Counter({2: 3, 3: 4})))
+    assert await instance._get_db(guild) is db
     assert not await db.is_message_history_seeded()
     assert instance._snapshots[1] == snapshot
-    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 1}]
+    assert instance._history_cutoffs[1] == upper
+    assert await db.get_message_leaderboard() == []
+    await instance.on_message(SimpleNamespace(id=upper, guild=guild,
+        author=SimpleNamespace(id=2, bot=False), webhook_id=None))
     assert await instance._ensure_history_seeded(guild, db)
-    assert collect.call_args.kwargs["upper_id"] == upper
-    assert collect.call_args.kwargs["snapshot"] == snapshot
+    king.collect_history.assert_awaited_once_with(scope, upper_id=upper,
+        progress=instance._seed_progress[1], snapshot=snapshot)
+    assert await db.is_message_history_verified()
+    assert await db.get_message_leaderboard() == [
+        {"user_id": 2, "message_count": 4}, {"user_id": 3, "message_count": 4},
+    ]
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    async with aiosqlite.connect(db.db_name) as connection:
+        assert await (await connection.execute("SELECT value FROM resource_sentinel")).fetchone() == ("keep",)
+        assert await (await connection.execute(
+            "SELECT value FROM message_stats_meta WHERE key = 'history_snapshot_id'"
+        )).fetchone() == (snapshot.checksum,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_seeded", [False, True])
+async def test_invalid_snapshot_does_not_expose_database_or_clear_counts(tmp_path, monkeypatch, legacy_seeded):
+    db = await database(tmp_path)
+    await db.increment_message_count(2, 7)
+    await db.set_message_history_seeded(legacy_seeded)
+    instance = cog()
+    guild = SimpleNamespace(id=1, name="guild")
+    snapshot_path = tmp_path / "leaderboard_preloads" / "1.json"
+    snapshot_path.parent.mkdir()
+    snapshot_path.write_text('{"sha256":"invalid"}', encoding="utf-8")
+    monkeypatch.setattr(king, "DatabaseManager", lambda *args: db)
+    monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
+    with pytest.raises(ValueError, match="checksum"):
+        await instance._get_db(guild)
+    assert not instance._dbs and not instance._history_cutoffs
+    assert not instance._seed_tokens and not instance._snapshots
+    assert await db.is_message_history_seeded() == legacy_seeded
+    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 7}]
+
+
+@pytest.mark.asyncio
+async def test_preparation_failure_can_retry_without_exposing_partial_state(tmp_path, monkeypatch):
+    db = await database(tmp_path)
+    await db.increment_message_count(2, 7)
+    instance = cog()
+    guild = SimpleNamespace(id=1, name="guild")
+    begin_seed = db.begin_message_history_seed
+    db.begin_message_history_seed = AsyncMock(side_effect=RuntimeError("seed transaction unavailable"))
+    monkeypatch.setattr(king, "DatabaseManager", lambda *args: db)
+    monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="seed transaction"):
+        await instance._get_db(guild)
+    assert not instance._dbs and not instance._history_cutoffs
+    assert not instance._seed_tokens and not instance._snapshots
+    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 7}]
+    db.begin_message_history_seed = begin_seed
+    assert await instance._get_db(guild) is db
+    assert instance._seed_tokens[1]
+    assert instance._history_cutoffs[1]
+    assert instance._snapshots[1] is None
+
+
+@pytest.mark.asyncio
+async def test_completed_seed_refuses_preparation_without_installing_new_state(tmp_path, monkeypatch):
+    db = await database(tmp_path)
+    await db.begin_message_history_seed("completed", 100)
+    await db.finish_message_history_seed("completed", {2: 7}, "full-history")
+    instance = cog()
+    monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
+    await instance._prepare_history_seed(SimpleNamespace(id=1), db)
+    assert not instance._seed_tokens and not instance._history_cutoffs and not instance._snapshots
     assert await db.is_message_history_verified()
     assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 7}]
 
 
 @pytest.mark.asyncio
-async def test_invalid_snapshot_does_not_reset_existing_counts(tmp_path, monkeypatch):
+async def test_seed_worker_prepares_missing_attempt_before_scanning(tmp_path, monkeypatch):
     db = await database(tmp_path)
-    await db.set_message_history_seeded(True)
-    await db.increment_message_count(2, 99)
-    snapshot_path = tmp_path / "leaderboard_preloads" / "1.json"
-    snapshot_path.parent.mkdir()
-    snapshot_path.write_text("{}", encoding="utf-8")
     instance = cog()
-    monkeypatch.setattr(king, "DatabaseManager", lambda *args: db)
+    upper = boundary_id(discord.utils.utcnow() - timedelta(seconds=1))
+    scope = HistoryScope(1)
     monkeypatch.setattr(king.ConfigPaths, "DATA_DIR", tmp_path)
-    with pytest.raises(ValueError, match="checksum"):
-        await instance._get_db(SimpleNamespace(id=1, name="guild"))
-    assert await db.is_message_history_seeded()
-    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 99}]
-    assert instance._dbs == {}
-    assert instance._seed_tokens == {}
-    assert instance._history_cutoffs == {}
+    monkeypatch.setattr(king, "next_boundary_id", lambda: upper)
+    monkeypatch.setattr(king, "discover_scope", AsyncMock(return_value=scope))
+    monkeypatch.setattr(king, "collect_history", AsyncMock(return_value=Counter({2: 3})))
+    assert await instance._ensure_history_seeded(SimpleNamespace(id=1), db)
+    assert instance._seed_tokens[1]
+    assert instance._history_cutoffs[1] == upper
+    king.collect_history.assert_awaited_once_with(scope, upper_id=upper,
+        progress=instance._seed_progress[1], snapshot=None)
+    assert await db.is_message_history_verified()
+    assert await db.get_message_leaderboard() == [{"user_id": 2, "message_count": 3}]
 
 
 @pytest.mark.asyncio
