@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -51,6 +52,13 @@ class InstagramFeedConfig:
 
 
 @dataclass(slots=True)
+class HistoryTodayConfig:
+
+    enabled: bool = True
+    timezone: str = "Asia/Taipei"
+
+
+@dataclass(slots=True)
 class Settings:
 
     guild_id: int
@@ -78,6 +86,7 @@ class Settings:
     quote_api_timeout: int = 15
     quote_api_user_agent: str = ""
     instagram_feed: InstagramFeedConfig = field(default_factory=InstagramFeedConfig)
+    history_today: HistoryTodayConfig = field(default_factory=HistoryTodayConfig)
     config_path: Path | None = None
 
     @classmethod
@@ -159,6 +168,24 @@ class Settings:
             poll_minutes=max(1, int(instagram_data.get("poll_minutes", 5) or 5)),
         )
 
+        history_data = data.get("history_today", {}) or {}
+        if not isinstance(history_data, dict):
+            raise ValueError("history_today 必須是 JSON 物件。")
+        history_enabled = history_data.get("enabled", True)
+        if isinstance(history_enabled, str):
+            history_enabled = history_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        history_timezone = str(history_data.get("timezone", "Asia/Taipei")).strip()
+        try:
+            ZoneInfo(history_timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"history_today.timezone 無效：{history_timezone!r}。請使用 IANA 時區名稱，例如 Asia/Taipei。"
+            ) from exc
+        history_today = HistoryTodayConfig(
+            enabled=bool(history_enabled),
+            timezone=history_timezone,
+        )
+
         return cls(
             guild_id=int(data["guild_id"]),
             welcome_channel_id=int(data["welcome_channel_id"]),
@@ -185,6 +212,7 @@ class Settings:
             quote_api_timeout=quote_api_timeout,
             quote_api_user_agent=quote_api_user_agent,
             instagram_feed=instagram_feed,
+            history_today=history_today,
             config_path=path.resolve(),
         )
 

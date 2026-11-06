@@ -14,7 +14,10 @@ from .utils.config_paths import ConfigPaths
 from .utils.logging_config import setup_logging
 
 
-_GLOBAL_FALLBACK_COMMANDS = ("resource_setup", "llm_channel", "最佳幹話王")
+_HISTORY_COMMANDS = ("today", "daily", "daily-status", "daily-off", "history-help")
+_GLOBAL_FALLBACK_COMMANDS = (
+    "resource_setup", "llm_channel", "最佳幹話王", *_HISTORY_COMMANDS,
+)
 
 
 def build_bot(settings_path: Path | str) -> commands.Bot:
@@ -121,6 +124,7 @@ def build_bot(settings_path: Path | str) -> commands.Bot:
 
 
 _OPTION_DEFAULTS = {
+    "required": False,
     "choices": [],
     "channel_types": [],
     "autocomplete": False,
@@ -181,41 +185,67 @@ async def _sync_global_single_command(
 
     expected_type = _local_command_type(local_command)
 
-    remote_commands = await bot.tree.fetch_commands()
+    # Read the raw payload so zero-based contexts are compared accurately.
+    # Some discord.py versions lose the guild context while parsing it.
+    remote_commands = await bot.http.get_global_commands(bot.application_id)
     remote_command = next(
         (
             command
             for command in remote_commands
-            if command.name == command_name
-            and command.type == expected_type
+            if command["name"] == command_name
+            and command.get("type", 1) == expected_type.value
         ),
         None,
     )
 
-    if expected_type == discord.AppCommandType.chat_input:
-        desired_description = local_payload.get("description", "")
-        desired_options = local_payload.get("options", [])
-        if remote_command is not None:
-            remote_options = [option.to_dict() for option in remote_command.options]
-            if (
-                remote_command.description == desired_description
-                and [_normalize_app_command_option(option) for option in remote_options]
-                == [_normalize_app_command_option(option) for option in desired_options]
-            ):
-                return "already matches"
-
-            await bot.http.edit_global_command(
-                bot.application_id,
-                remote_command.id,
-                {
-                    "description": desired_description,
-                    "options": desired_options,
-                },
-            )
-            return "updated"
-    else:
+    if expected_type != discord.AppCommandType.chat_input:
         if remote_command is not None:
             return "already matches"
+        await bot.http.upsert_global_command(bot.application_id, local_payload)
+        return "created"
+
+    desired_description = local_payload["description"]
+    desired_options = local_payload.get("options", [])
+    # History administration commands need their permissions and server-only
+    # scope preserved even when a same-name legacy command already exists.
+    desired_metadata: dict[str, object] = {}
+    if command_name in _HISTORY_COMMANDS:
+        desired_metadata = {
+            "default_member_permissions": local_payload.get("default_member_permissions"),
+            "dm_permission": local_payload.get("dm_permission", True),
+        }
+        if local_payload.get("contexts") is not None:
+            desired_metadata["contexts"] = local_payload["contexts"]
+    if remote_command is not None:
+        remote_options = remote_command.get("options", [])
+        remote_permissions = remote_command.get("default_member_permissions")
+        remote_metadata: dict[str, object] = {
+            "default_member_permissions": (
+                None
+                if remote_permissions is None
+                else int(remote_permissions)
+            ),
+            "dm_permission": remote_command.get("dm_permission") is not False,
+            "contexts": remote_command.get("contexts"),
+        }
+        if (
+            remote_command["description"] == desired_description
+            and [_normalize_app_command_option(option) for option in remote_options]
+            == [_normalize_app_command_option(option) for option in desired_options]
+            and all(remote_metadata[key] == value for key, value in desired_metadata.items())
+        ):
+            return "already matches"
+
+        await bot.http.edit_global_command(
+            bot.application_id,
+            int(remote_command["id"]),
+            {
+                "description": desired_description,
+                "options": desired_options,
+                **desired_metadata,
+            },
+        )
+        return "updated"
 
     await bot.http.upsert_global_command(bot.application_id, local_payload)
     return "created"

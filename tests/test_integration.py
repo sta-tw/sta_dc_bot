@@ -18,6 +18,7 @@ def test_all_cogs_import():
     from bot.cogs.set_category import Set_Category
     from bot.cogs.exchange_setup import Exchange_Setup
     from bot.cogs.role_button import Role_Button
+    from bot.cogs.history_today import HistoryToday
 
     assert Welcome is not None
     assert TicketCog is not None
@@ -29,6 +30,7 @@ def test_all_cogs_import():
     assert Set_Category is not None
     assert Exchange_Setup is not None
     assert Role_Button is not None
+    assert HistoryToday is not None
 
 def test_all_ui_modules_import():
     from utils.role_ui import Verfication_View, setup_persistent_views_role

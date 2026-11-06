@@ -13,6 +13,7 @@ class ConfigPaths:
     GUILDS_DIR = CONFIG_DIR / "guilds"
 
     DATABASE_DIR = DATA_DIR / "database"
+    HISTORY_DATABASE = DATABASE_DIR / "history_today.db"
     TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
     INSTAGRAM_FEED_DIR = DATA_DIR / "instagram_feed"
 

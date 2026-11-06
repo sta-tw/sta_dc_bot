@@ -8,6 +8,11 @@ readme by claude
 ### 歡迎模組
 新成員加入伺服器時自動在指定頻道送出歡迎訊息。
 
+### 歷史上的今天
+- `/today`：查詢今天或指定月日的大事記、出生、逝世與節日，附維基百科來源連結。
+- `/daily`、`/daily-status`、`/daily-off`：設定、查看或停用每日歷史推送。
+- `/history-help`：顯示歷史查詢及推送的使用說明。
+
 ### 客服單模組
 - 固定頻道顯示「聯絡我們」面板按鈕，使用者選擇分類後填寫表單即可開啟客服單。
 - 建立客服單時檢查禁止字詞。
@@ -117,6 +122,7 @@ readme by claude
    | `starboard_emoji` | 觸發爆言的 emoji（預設 `⭐`） |
    | `support_role_ids` | 擁有客服權限的身分組 ID 陣列 |
    | `instagram_feed` | Instagram 公開 feed、通知頻道、通知身分組與輪詢設定 |
+   | `history_today` | 歷史功能的啟用狀態與預設 IANA 時區（預設 `Asia/Taipei`） |
    | `transcript_dir` | 客服紀錄儲存路徑 |
    | `ticket_categories` | 面板可選分類（`label`、`value`、`channel_prefix`） |
    | `blocked_keywords` | 禁止出現的字詞清單 |
@@ -139,6 +145,28 @@ readme by claude
 Bot 會每 5 分鐘以不帶登入狀態的單次 HTTP GET 讀取公開 Instagram 個人頁面，解析頁面中公開呈現的貼文連結。**不支援 Instagram 登入、Cookie、私人 API、CAPTCHA、代理輪換或繞過反爬限制**。如果 Instagram 回傳登入頁、401/403 或暫時封鎖，Bot 會略過該次檢查，不會嘗試繞過限制。首次啟動會先記錄目前已存在的貼文，不會一次刷出歷史貼文。
 
 貼文去重狀態會儲存在 `data/instagram_feed/{guild_or_channel_id}/state.json`（所有帳號共用同一份檔案，各帳號分別記錄是否已完成首次快照）；同一則貼文若同時出現在兩個帳號（合作貼文），只會通知一次。Bot 重啟後會沿用狀態，通知訊息上的領取身分組按鈕也會在啟動時重新註冊。
+
+---
+
+## 歷史上的今天配置
+
+歷史功能已整合為 `bot.cogs.history_today`，沿用 `main.py` 與 `.env` 的 `DISCORD_TOKEN`。安裝更新後的 `requirements.txt`，確認 `config/bot.json` 的 `extensions` 包含此 Cog，然後重啟 Bot；不需要另一個 Token 或額外的 API 金鑰。若指令尚未出現，可用管理員的 `/sync` 或 `/sync_global` 重新同步；若手動同步遇到 Discord Activity 的 50240 限制，請重啟 Bot，讓啟動流程逐一同步歷史指令。全域指令仍可能需要等待才顯示。
+
+| 指令 | 用途 |
+|---|---|
+| `/today` | 依預設時區查詢今天，預設大事記 5 筆。 |
+| `/today month:10 day:4 category:events count:5` | 查詢指定月日；`month` 與 `day` 必須一起指定。 |
+| `/today category:random count:random5` | 隨機選擇有資料的分類，再抽出最多 5 筆不重複資料。 |
+| `/daily channel:#歷史上的今天 hour:9 minute:0 timezone:Asia/Taipei category:events count:5` | 在目前伺服器設定每天自動推送；只有 `channel` 為必填。 |
+| `/daily-status` | 查看目前伺服器的推送設定。 |
+| `/daily-off` | 關閉目前伺服器的推送並刪除設定及發送紀錄。 |
+| `/history-help` | 查看完整使用說明。 |
+
+`category` 可選 `events`（大事記）、`births`（出生）、`deaths`（逝世）、`holidays`（節日）或 `random`（隨機分類）；`count` 可選 1–10 筆（預設 5）或 `random5`（隨機抽 5 筆，資料不足時顯示全部）。兩種隨機選項可分開使用，也適用於 `/daily`，每日推送時會重新抽選。`hour` 採 24 小時制（0–23），`minute` 為 0–59；未指定時預設每天 09:00。`timezone` 使用 IANA 名稱，例如 `Asia/Taipei`、`Asia/Hong_Kong` 或 `America/New_York`，未指定時沿用 `history_today.timezone`。設定、查看或關閉每日推送需要「管理伺服器」權限；Bot 在目標文字頻道需要檢視頻道、發送訊息與嵌入連結權限。
+
+`config/bot.json` 的 `history_today.enabled` 設為 `false` 可停用此 Cog，`history_today.timezone` 設定預設時區；修改後需重啟 Bot。資料取自中文維基百科並請求繁體內容，查詢訊息會附原始來源連結；不使用 AI 生成歷史資料。此功能由 [dc-history-bot](https://github.com/steventeng2022/dc-history-bot) 的查詢、排程與格式化程式整合而來。
+
+每個伺服器可設定一組每日推送，保存在 `data/database/history_today.db`（SQLite），重啟後沿用。排程每 30 秒檢查一次，錯誤時採 1–15 分鐘退避重試；成功發送後才記錄當地日期，每天最多成功推送一次。Bot 在設定時間之後啟動時會補送當天資料；更新 `/daily` 設定會保留當天已送紀錄，`/daily-off` 則刪除紀錄，因此重新啟用可於當天再次推送。請以單一 Bot 程序操作此資料庫；若程序在 Discord 已收到訊息、資料庫尚未記錄成功之間中斷，重啟後可能重複發送。
 
 ---
 
