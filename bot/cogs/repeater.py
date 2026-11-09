@@ -94,7 +94,10 @@ class Repeater(commands.Cog):
                 send_text = content
 
             try:
-                await message.channel.send(send_text)
+                await message.channel.send(
+                    send_text,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 state.last_echo_at = now
                 state.streak = 0
             except discord.HTTPException as exc:
