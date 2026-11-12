@@ -57,7 +57,7 @@ REVIVE_SOURCES: Final = {"personal": "1 個不死圖騰", "server": "1 次伺服
 PERIOD_DAYS: Final[dict[Period, int]] = {"7d": 7, "30d": 30, "all": 0}
 
 HELP = f"""**數數規則**
-大家輪流在數數頻道從 1 往上數，每則訊息輸入下一個數字。Bot 只讀訊息開頭的數字，後面可以接文字；不是數字開頭的訊息會被忽略，可以照常聊天。
+大家輪流在數數頻道從 1 往上數，每則訊息輸入下一個數字。Bot 會讀取訊息開頭的數字或算式，後面空一格就可以接文字；不是以數字或算式開頭的訊息會被忽略，可以照常聊天。
 同一個人不能連續數兩次，要等別人接上才能再數；不小心重複送出自己剛數的數字則會被忽略。數錯（包括連續數兩次）會讓進度歸零，下一個要從 1 重新開始，除非觸發下方的自動復活。訊息送出後再編輯或刪除，都不會改變進度，Bot 會提醒大家下一個數字。
 自動復活：數錯時如果你有不死圖騰，會自動消耗 1 個保住進度；沒有的話改用伺服器的 1 次復活額度。兩者都沒有才會歸零。復活時仍會記一次錯誤。
 免死時間：有人數對後的這段秒數內，其他人送出相同數字不算錯，也不算成功。預設為 0（關閉），由管理員設定。
@@ -81,7 +81,10 @@ Bot 會在每則數數訊息加上反應，分別標示數對、免死保護、�
 `/count give 成員 數量`、`/count give_server 數量`：增加或扣除（負數）個人圖騰或伺服器額度。
 `/count ban 成員`、`/count unban 成員`、`/count bans`：禁止或恢復成員數數，被禁止的人送出的數字會被忽略。
 
-以上指令也可以用 `!count 子指令` 呼叫。目前只接受半形的非負數（整數部分最多 {MAX_DIGITS} 位），小數點前後的 0 可以省略；小數會無條件捨去，例如 12.9 算 12。全形數字、算式和進位寫法暫不支援。"""
+**算式**
+訊息開頭可以是算式，依照先乘除後加減計算，結果無條件捨去成整數，例如 `12.9`、`3*4`、`√144` 都算 12。
+支援全形與半形字元、`+ - * / // % ^ **`、括號、階乘 `!`、科學記號 `1e3`、`0x` `0b` `0o` 進位、上標 `2²`、`√` `∛`、常數 `pi` `e` `i`，以及 `sqrt` `log` `ln` `sin` `cos` `tan` `abs` `floor` `ceil` `round` 等函式（`log(x)` 以 10 為底，三角函數用弧度）。
+複數結果取實部，整數部分最多 {MAX_DIGITS} 位；運算子後面接的不是算式時，會當成一般文字。常數 `e`、`i` 只認小寫。以上指令也可以用 `!count 子指令` 呼叫。"""
 
 
 class CountUsageError(commands.CommandError):
@@ -719,7 +722,11 @@ class Count(commands.Cog):
         guild = message.guild
         if guild is None or message.author.bot or message.webhook_id:
             return
-        # Cheap checks first; only possible counts reach the database.
+        # Skip other channels before evaluating math. A guild whose channels are
+        # not loaded yet (e.g. right after a reload) falls through to the lock.
+        channels = self._channels.get(guild.id)
+        if channels is not None and message.channel.id not in channels:
+            return
         number = parse_number(message.content)
         if number is None:
             return
