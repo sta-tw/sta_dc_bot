@@ -188,6 +188,7 @@ _BINARY: Final[dict[str, tuple[int, int]]] = {
 _LIMIT_LEVELS: Final = 11
 _LIMIT_TOLERANCE: Final = 1e-6
 _DERIVATIVE_LEVELS: Final = 7
+_DERIVATIVE_TOLERANCE: Final = 1e-6
 _QUADRATURE_RANGE: Final = 4
 _QUADRATURE_LEVELS: Final = 7
 _QUADRATURE_TOLERANCE: Final = 1e-13
@@ -206,8 +207,12 @@ class _SyntaxError(ExpressionError):
 
 
 def _scalar(value: Value) -> Number:
-    if isinstance(value, tuple):
-        raise ExpressionError("number required")
+    # A single-item square bracket can still group an arithmetic expression.
+    # Keep its structure until evaluation so [[1]] also represents a 1×1 matrix.
+    while isinstance(value, tuple):
+        if len(value) != 1:
+            raise ExpressionError("number required")
+        value = value[0]
     return value
 
 
@@ -351,6 +356,35 @@ def _analytic(
 
 def _ln_fraction(value: Fraction) -> float:
     return math.log(value.numerator) - math.log(value.denominator)
+
+
+def _trigonometric(
+    real: Callable[[float], float],
+    complex_: Callable[[complex], complex],
+    quadrants: tuple[int | None, int | None, int | None, int | None],
+) -> Callable[[Number], Number]:
+    """Keep recognizable quadrant angles exact, including undefined poles."""
+    analytic = _analytic(real, complex_)
+
+    def apply(value: Number) -> Number:
+        if isinstance(value, complex) and value.imag != 0:
+            return analytic(value)
+        angle = value.real if isinstance(value, complex) else float(value)
+        multiple = round(angle / (math.pi / 2))
+        if angle == multiple * (math.pi / 2):
+            # Allow the rounding error to grow with the represented angle,
+            # but cap it: huge angles can look like quadrant multiples solely
+            # because their floating point spacing is larger than a period.
+            residual = math.cos(angle) if multiple % 2 else math.sin(angle)
+            tolerance = min(4 * math.ulp(angle), EPSILON)
+            if abs(residual) <= tolerance:
+                exact = quadrants[multiple % 4]
+                if exact is None:
+                    raise ExpressionError("trigonometric function is undefined")
+                return Fraction(exact)
+        return analytic(value)
+
+    return apply
 
 
 def _exact_log(value: Number, base: Number) -> Fraction | None:
@@ -509,6 +543,8 @@ def _matrix(value: Value) -> list[list[Number]]:
     for row in value:
         if not isinstance(row, tuple) or len(row) != len(value):
             raise ExpressionError("square matrix required")
+        if any(isinstance(item, tuple) for item in row):
+            raise ExpressionError("matrix entries must be numbers")
         rows.append([_scalar(item) for item in row])
     if len(rows) > MAX_MATRIX:
         raise ExpressionError("matrix too large")
@@ -549,9 +585,9 @@ _UNARY_FUNCTIONS: Final[dict[str, Callable[[Number], Number]]] = {
     "ln": _ln,
     "log10": lambda value: _log(value, Fraction(10)),
     "log2": lambda value: _log(value, Fraction(2)),
-    "sin": _analytic(math.sin, cmath.sin),
-    "cos": _analytic(math.cos, cmath.cos),
-    "tan": _analytic(math.tan, cmath.tan),
+    "sin": _trigonometric(math.sin, cmath.sin, (0, 1, 0, -1)),
+    "cos": _trigonometric(math.cos, cmath.cos, (1, 0, -1, 0)),
+    "tan": _trigonometric(math.tan, cmath.tan, (0, None, 0, None)),
     "asin": _analytic(math.asin, cmath.asin),
     "acos": _analytic(math.acos, cmath.acos),
     "atan": _analytic(math.atan, cmath.atan),
@@ -793,10 +829,26 @@ def _limit(body: Node, env: _Env, name: str, target: Number, cost: int) -> Numbe
 
 
 def _derivative(body: Node, env: _Env, name: str, order: int, cost: int) -> Number:
-    """Central differences with Richardson extrapolation.
+    """Extrapolate finite differences and check both sides for each derivative.
 
-    Steps stay exact fractions, so polynomials give exact results.
+    Symmetric differences alone can hide corners, as for abs(x) at zero.
+    Steps stay exact fractions, so polynomial differences remain exact.
+    Finite sampling is a convergence check, not a proof of differentiability.
     """
+
+    def extrapolate(values: list[Number], shift: int) -> Number:
+        # Very small steps amplify floating point cancellation. Use the most
+        # stable extrapolation instead of always trusting the smallest step.
+        best: Number = values[0]
+        best_error = math.inf
+        for count in range(3, len(values) + 1):
+            estimate, error = _richardson(values[:count], shift)
+            if error < best_error:
+                best, best_error = estimate, error
+        if not best_error <= _DERIVATIVE_TOLERANCE * max(1.0, abs(best)):
+            raise ExpressionError("derivative does not converge")
+        return _checked(best)
+
     x = _real(env.lookup(name))
     size = abs(x)
     # Small enough to stay inside the domain near 0, as in ln(x) at 0.1.
@@ -813,7 +865,52 @@ def _derivative(body: Node, env: _Env, name: str, order: int, cost: int) -> Numb
             Fraction(0),
         )
         values.append(total / math.prod([h] * order))
-    estimate, _ = _richardson(values, 2)
+    try:
+        estimate = extrapolate(values, 2)
+    except ExpressionError:
+        # A derivative may exist without the next derivative being smooth,
+        # as for x*abs(x) at zero, whose central error is linear in h.
+        estimate = extrapolate(values, 1)
+
+    # A higher derivative also requires all preceding derivatives to exist.
+    # For example, the symmetric third difference of abs(x) is zero, despite
+    # its first derivative not existing at the origin.
+    at_point = env.at(body, name, x, cost)
+    for degree in range(1, order + 1):
+        weights = [
+            (-1 if (degree - j) % 2 else 1) * math.comb(degree, j)
+            for j in range(degree + 1)
+        ]
+        sides: list[Number] = []
+        exact_constant_sides: list[bool] = []
+        for direction in (-1, 1):
+            differences: list[Number] = []
+            for level in range(_DERIVATIVE_LEVELS):
+                h = direction * step / (degree * (1 << level))
+                total = weights[0] * at_point + sum(
+                    (
+                        weights[j] * env.at(body, name, x + j * h, cost)
+                        for j in range(1, degree + 1)
+                    ),
+                    Fraction(0),
+                )
+                differences.append(total / math.prod([h] * degree))
+            sides.append(extrapolate(differences, 1))
+            exact_constant_sides.append(
+                all(
+                    isinstance(value, Fraction) and value == differences[0]
+                    for value in differences
+                )
+            )
+        tolerance = _DERIVATIVE_TOLERANCE * max(1.0, *(abs(side) for side in sides))
+        # Exact, constant slopes need no floating point tolerance. Otherwise a
+        # small multiplier could hide the corner in e.g. 1e-20*abs(x).
+        if (all(exact_constant_sides) and sides[0] != sides[1]) or (
+            abs(sides[0] - sides[1]) > tolerance
+        ):
+            raise ExpressionError("one-sided derivatives differ")
+        if degree == order and any(abs(side - estimate) > tolerance for side in sides):
+            raise ExpressionError("derivative estimates differ")
     return _checked(_inexact(estimate))
 
 
@@ -1218,7 +1315,7 @@ class _Parser:
             _ = self.advance()
             items.append(self.expression(0))
         _ = self.expect("close", closer)
-        if opener == "[" and (len(items) > 1 or isinstance(items[0], _ListNode)):
+        if opener == "[":
             return _ListNode(tuple(items))
         if opener in "⌊⌈":
             name = "floor" if opener == "⌊" else "ceil"
