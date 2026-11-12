@@ -4,14 +4,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Final, TypedDict, cast
+from typing import Final, Literal, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 import aiosqlite
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 COOLDOWN = 12 * 3600
-REVIVE_WINDOW = 60
 PERSONAL_LIMIT = 400
 SERVER_LIMIT = 300
 TOTEM_UNITS = 100
@@ -36,9 +35,6 @@ class ChannelState(TypedDict):
     last_success_id: int
     last_user_id: int | None
     best_number: str
-    failed_by: int | None
-    failed_at: float | None
-    restore_number: str | None
 
 
 class Wallet(TypedDict):
@@ -60,12 +56,30 @@ class UserStatistics(TypedDict):
     error_rate: float
 
 
+type Outcome = Literal["success", "protected", "revived", "error"]
+type ReviveSource = Literal["personal", "server"]
+
+
+class InvalidGraceError(ValueError):
+    """A grace period a member typed in; its message is safe to show them."""
+
+
 @dataclass(frozen=True)
 class CountResult:
-    outcome: str
+    outcome: Outcome
     expected: int
     previous: int
     consecutive: bool = False
+    # Set when a mistake was absorbed by a totem instead of resetting progress.
+    revive_source: ReviveSource | None = None
+    # A success that went past the channel's previous best number.
+    new_record: bool = False
+
+
+@dataclass(frozen=True)
+class Adjustment:
+    applied: int
+    balance: int
 
 
 def _units(units: int) -> str:
@@ -187,7 +201,7 @@ class CountRepository:
     @staticmethod
     def validate_grace(seconds: float) -> None:
         if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("免死時間必須為大於或等於 0 的有限秒數。")
+            raise InvalidGraceError("免死時間必須為大於或等於 0 的有限秒數。")
 
     async def initialize(self) -> set[int]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,10 +215,7 @@ class CountRepository:
                     grace_seconds REAL NOT NULL DEFAULT 0,
                     last_success_id INTEGER NOT NULL DEFAULT 0,
                     last_user_id INTEGER,
-                    best_number TEXT NOT NULL DEFAULT '0',
-                    failed_by INTEGER,
-                    failed_at REAL,
-                    restore_number TEXT
+                    best_number TEXT NOT NULL DEFAULT '0'
                 );
                 -- Keep these CHECK bounds in sync with PERSONAL_LIMIT/SERVER_LIMIT.
                 CREATE TABLE IF NOT EXISTS counting_wallets (
@@ -238,6 +249,11 @@ class CountRepository:
                 );
                 CREATE INDEX IF NOT EXISTS counting_actions_time
                     ON counting_actions(occurred_at, user_id);
+                CREATE TABLE IF NOT EXISTS counting_bans (
+                    user_id INTEGER PRIMARY KEY,
+                    banned_by INTEGER NOT NULL,
+                    banned_at REAL NOT NULL
+                );
                 """
             ):
                 pass
@@ -296,8 +312,15 @@ class CountRepository:
             row = await self._channel(db, channel_id)
             if row is None or message_id <= row["last_message_id"]:
                 return None
+            if await self._fetchone(
+                db, "SELECT 1 FROM counting_bans WHERE user_id = ?", (user_id,)
+            ):
+                return None
             current = int(row["current_number"])
             expected = current + 1
+            if current > 0 and number == current and row["last_user_id"] == user_id:
+                # A repeat of your own last count (double send) is ignored.
+                return None
             last_success_id = row["last_success_id"]
             grace_seconds = row["grace_seconds"]
             # Snowflake timestamps measure send time, not handler/network delay.
@@ -310,27 +333,34 @@ class CountRepository:
                 and 0 <= delta_ms <= grace_seconds * 1000
             )
             consecutive = current > 0 and row["last_user_id"] == user_id
+            revive_source: ReviveSource | None = None
+            new_record = False
+            outcome: Outcome
             if number == expected and not consecutive:
                 outcome = "success"
-                best = max(number, int(row["best_number"]))
+                new_record = number > int(row["best_number"])
+                best = number if new_record else int(row["best_number"])
                 await self._execute(
                     db,
                     """UPDATE counting_channels SET current_number = ?,
-                        last_success_id = ?, last_user_id = ?, best_number = ?,
-                        failed_by = NULL, failed_at = NULL, restore_number = NULL
+                        last_success_id = ?, last_user_id = ?, best_number = ?
                         WHERE channel_id = ?""",
                     (str(number), message_id, user_id, str(best), channel_id),
                 )
             elif protected:
                 outcome = "protected"
+            elif current > 0 and (
+                revive_source := await self._consume_revive(db, user_id, now)
+            ):
+                # Progress is kept as-is; only the totem or server quota is spent.
+                outcome = "revived"
             else:
                 outcome = "error"
                 await self._execute(
                     db,
                     """UPDATE counting_channels SET current_number = '0',
-                        last_success_id = 0, failed_by = ?, failed_at = ?,
-                        restore_number = ? WHERE channel_id = ?""",
-                    (user_id, now, str(current), channel_id),
+                        last_success_id = 0 WHERE channel_id = ?""",
+                    (channel_id,),
                 )
             await self._execute(
                 db,
@@ -345,8 +375,37 @@ class CountRepository:
                 (message_id, channel_id, user_id, now, outcome),
             )
             return CountResult(
-                outcome, expected, current, consecutive and outcome == "error"
+                outcome,
+                expected,
+                current,
+                consecutive and outcome in ("revived", "error"),
+                revive_source,
+                new_record,
             )
+
+    @classmethod
+    async def _consume_revive(
+        cls, db: aiosqlite.Connection, user_id: int, now: float
+    ) -> ReviveSource | None:
+        """Spend a personal totem first, then server quota; None if neither."""
+        wallet = await cls._wallet(db, user_id)
+        if wallet is not None and wallet["units"] >= TOTEM_UNITS:
+            await cls._execute(
+                db,
+                "UPDATE counting_wallets SET units = units - ? WHERE user_id = ?",
+                (TOTEM_UNITS, user_id),
+            )
+            await cls._record_action(db, user_id, now, "revive", -TOTEM_UNITS, 0)
+            return "personal"
+        if await cls._server_units(db) >= TOTEM_UNITS:
+            await cls._execute(
+                db,
+                "UPDATE counting_server SET units = units - ? WHERE singleton = 1",
+                (TOTEM_UNITS,),
+            )
+            await cls._record_action(db, user_id, now, "revive", 0, -TOTEM_UNITS)
+            return "server"
+        return None
 
     async def wallet(self, user_id: int) -> tuple[Wallet, int]:
         # Both balances must describe the same database snapshot.
@@ -433,59 +492,74 @@ class CountRepository:
                 f"{_units(server_units + SACRIFICE_REWARD)}／{_units(SERVER_LIMIT)} 次。"
             )
 
-    async def revive(
-        self, channel_id: int, user_id: int, now: float
-    ) -> tuple[bool, str]:
+    async def adjust_wallet(self, user_id: int, units: int, now: float) -> Adjustment:
+        """Add or remove totem units, clamped to the personal limit."""
         async with self._transaction() as db:
-            row = await self._channel(db, channel_id)
-            failed_at = row["failed_at"] if row is not None else None
-            previous = int(row["restore_number"] or 0) if row is not None else 0
-            if (
-                row is None
-                or row["failed_by"] != user_id
-                or failed_at is None
-                or not 0 <= now - failed_at <= REVIVE_WINDOW
-                or int(row["current_number"]) != 0
-                or previous <= 0
-            ):
-                reason = (
-                    f"無法復活：僅限數錯者在 {REVIVE_WINDOW} 秒內、尚未重新開始時，"
-                    "恢復最近一次大於 0 的進度。"
-                )
-                return False, reason
-            wallet = await self._wallet(db, user_id)
-            personal_delta = server_delta = 0
-            if wallet is not None and wallet["units"] >= TOTEM_UNITS:
-                source, personal_delta = "個人不死圖騰", -TOTEM_UNITS
-                await self._execute(
-                    db,
-                    "UPDATE counting_wallets SET units = units - ? WHERE user_id = ?",
-                    (TOTEM_UNITS, user_id),
-                )
-            else:
-                if await self._server_units(db) < TOTEM_UNITS:
-                    return False, "個人不死圖騰與伺服器復活額度皆不足 1，無法復活。"
-                source, server_delta = "伺服器復活額度", -TOTEM_UNITS
-                await self._execute(
-                    db,
-                    "UPDATE counting_server SET units = units - ? WHERE singleton = 1",
-                    (TOTEM_UNITS,),
-                )
+            row = await self._wallet(db, user_id)
+            before = row["units"] if row is not None else 0
+            after = min(max(before + units, 0), PERSONAL_LIMIT)
             await self._execute(
                 db,
-                """UPDATE counting_channels SET current_number = ?, last_success_id = 0,
-                    failed_by = NULL, failed_at = NULL, restore_number = NULL
-                    WHERE channel_id = ?""",
-                (str(previous), channel_id),
+                """INSERT INTO counting_wallets (user_id, units) VALUES (?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET units = excluded.units""",
+                (user_id, after),
             )
-            await self._record_action(
-                db, user_id, now, "revive", personal_delta, server_delta
+            if after != before:
+                await self._record_action(db, user_id, now, "adjust", after - before)
+            return Adjustment(after - before, after)
+
+    async def adjust_server(self, actor_id: int, units: int, now: float) -> Adjustment:
+        """Add or remove server revive units, clamped to the server limit."""
+        async with self._transaction() as db:
+            before = await self._server_units(db)
+            after = min(max(before + units, 0), SERVER_LIMIT)
+            await self._execute(
+                db, "UPDATE counting_server SET units = ? WHERE singleton = 1", (after,)
             )
-            message = (
-                f"已消耗 1 單位{source}復活！"
-                f"進度恢復為 **{previous}**，下一個是 **{previous + 1}**。"
+            if after != before:
+                await self._record_action(
+                    db, actor_id, now, "adjust_server", 0, after - before
+                )
+            return Adjustment(after - before, after)
+
+    async def ban(self, user_id: int, banned_by: int, now: float) -> bool:
+        """Return False if the member was already banned."""
+        async with (
+            self._transaction() as db,
+            db.execute(
+                """INSERT OR IGNORE INTO counting_bans (user_id, banned_by, banned_at)
+                    VALUES (?, ?, ?)""",
+                (user_id, banned_by, now),
+            ) as cursor,
+        ):
+            return cursor.rowcount > 0
+
+    async def unban(self, user_id: int) -> bool:
+        """Return False if the member was not banned."""
+        async with (
+            self._transaction() as db,
+            db.execute(
+                "DELETE FROM counting_bans WHERE user_id = ?", (user_id,)
+            ) as cursor,
+        ):
+            return cursor.rowcount > 0
+
+    async def bans(self) -> list[int]:
+        async with self._connect() as db:
+            rows = await self._fetchall(
+                db, "SELECT user_id FROM counting_bans ORDER BY banned_at"
             )
-            return True, message
+        return [cast(int, row["user_id"]) for row in rows]
+
+    async def has_counting_data(self) -> bool:
+        """Guild databases are shared with other features; skip ones never set up."""
+        async with self._connect() as db:
+            row = await self._fetchone(
+                db,
+                """SELECT COUNT(*) AS tables FROM sqlite_master WHERE type = 'table'
+                    AND name IN ('counting_events', 'counting_actions')""",
+            )
+        return row is not None and cast(int, row["tables"]) == 2
 
     async def statistics(
         self, since: float = 0, user_id: int | None = None
@@ -497,7 +571,7 @@ class CountRepository:
                 db,
                 """WITH events AS (
                     SELECT user_id, SUM(outcome = 'success') AS successes,
-                        SUM(outcome = 'error') AS errors,
+                        SUM(outcome IN ('error', 'revived')) AS errors,
                         SUM(outcome = 'protected') AS protected,
                         MAX(occurred_at) AS last_active
                     FROM counting_events
@@ -526,7 +600,10 @@ class CountRepository:
     ) -> list[UserStatistics]:
         merged: dict[int, UserStatistics] = {}
         for path in paths:
-            for row in await cls(path, read_only=True).statistics(since, user_id):
+            repository = cls(path, read_only=True)
+            if not await repository.has_counting_data():
+                continue
+            for row in await repository.statistics(since, user_id):
                 target = merged.setdefault(
                     row["user_id"],
                     {
