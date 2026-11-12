@@ -20,8 +20,6 @@ from database.count import (
     SACRIFICE_REWARD,
     SERVER_LIMIT,
     TAIPEI,
-    WEEKDAY_REWARD,
-    WEEKEND_REWARD,
     Adjustment,
     CountRepository,
     InvalidGraceError,
@@ -45,6 +43,8 @@ STATS_COOLDOWN = 10.0
 STATS_CONCURRENCY = 2
 TEST_COOLDOWN = 3.0
 BAN_LIST_LIMIT = 50
+NAME_LOOKUP_TIMEOUT = 3.0
+EMBED_COLOR: Final = discord.Colour.blurple()
 NO_MENTIONS: Final = discord.AllowedMentions.none()
 # Reactions are the in-channel result markers.
 REACTIONS: Final = {
@@ -64,7 +64,7 @@ HELP = f"""**數數規則**
 Bot 會在每則數數訊息加上反應，分別標示數對、免死保護、自動復活和數錯歸零；第一次數到 10、100、1000 這類新位數時會發慶祝訊息。
 
 **不死圖騰**
-`/count claim`：領取不死圖騰，平日 {format_units(WEEKDAY_REWARD)} 個、週末 {format_units(WEEKEND_REWARD)} 個。依台北時間每天最多領 {DAILY_CLAIMS} 次，兩次至少間隔 {COOLDOWN // 3600} 小時；每人最多持有 {format_units(PERSONAL_LIMIT)} 個，超過的部分不會入帳。
+`/count claim`：隨機領取不死圖騰：90% 獲得 0.2～0.8 個、8% 獲得 1～2 個、2% 直接補滿至 {format_units(PERSONAL_LIMIT)} 個；隨機數量以 0.01 個為單位。依台北時間每天最多領 {DAILY_CLAIMS} 次，兩次至少間隔 {COOLDOWN // 3600} 小時；每人最多持有 {format_units(PERSONAL_LIMIT)} 個，超過的部分不會入帳。
 `/count wallet [成員]`：查看圖騰數量、伺服器復活額度和下次可領取的時間。
 `/count donatesave`：獻祭 1 個圖騰，讓伺服器復活額度增加 {format_units(SACRIFICE_REWARD)} 次（上限 {format_units(SERVER_LIMIT)} 次）。
 
@@ -165,8 +165,19 @@ def _guild(ctx: Context) -> discord.Guild:
     return ctx.guild
 
 
-async def _send(ctx: Context, content: str, *, ephemeral: bool = False) -> None:
-    _ = await ctx.send(content, ephemeral=ephemeral, allowed_mentions=NO_MENTIONS)
+async def _send(
+    ctx: Context,
+    content: str | None = None,
+    *,
+    embed: discord.Embed | None = None,
+    ephemeral: bool = False,
+) -> None:
+    if embed is None:
+        _ = await ctx.send(content, ephemeral=ephemeral, allowed_mentions=NO_MENTIONS)
+    else:
+        _ = await ctx.send(
+            content, embed=embed, ephemeral=ephemeral, allowed_mentions=NO_MENTIONS
+        )
 
 
 def _audit(ctx: Context, action: str, **details: object) -> None:
@@ -328,12 +339,13 @@ class Count(commands.Cog):
             and permissions.read_message_history
             and permissions.send_messages
             and permissions.add_reactions
+            and permissions.embed_links
         ):
             await _send(
                 ctx,
                 (
                     f"Bot 在 {channel.mention} 需要「檢視頻道」「讀取訊息歷史」"
-                    "「傳送訊息」「新增反應」四項權限。"
+                    "「傳送訊息」「新增反應」「嵌入連結」五項權限。"
                 ),
                 ephemeral=True,
             )
@@ -514,14 +526,20 @@ class Count(commands.Cog):
             await _send(ctx, "這個頻道還沒有啟用數數。", ephemeral=True)
             return
         current = int(row["current_number"])
-        await _send(
-            ctx,
-            (
-                f"目前：**{current}**｜下一個：**{current + 1}**\n"
-                f"最高紀錄：**{row['best_number']}**｜"
-                f"免死時間：{row['grace_seconds']:g} 秒"
-            ),
+        embed = discord.Embed(
+            title="數數頻道狀態",
+            description=f"<#{ctx.channel.id}>",
+            colour=EMBED_COLOR,
         )
+        embed.add_field(name="目前數字", value=f"{current:,}")
+        embed.add_field(name="下一個數字", value=f"{current + 1:,}")
+        embed.add_field(name="最高紀錄", value=f"{int(row['best_number']):,}")
+        embed.add_field(
+            name="免死時間",
+            value=f"{row['grace_seconds']:g} 秒" if row["grace_seconds"] else "關閉",
+        )
+        embed.set_footer(text=guild.name)
+        await _send(ctx, embed=embed)
 
     @count.command(name="claim", description="領取不死圖騰，每天最多兩次")
     @commands.guild_only()
@@ -563,16 +581,23 @@ class Count(commands.Cog):
             ready = f"<t:{int(next_claim)}:R>"
         else:
             ready = "現在就可以領取"
-        await _send(
-            ctx,
-            (
-                f"{target.mention} 的不死圖騰：**{format_units(wallet['units'])}／"
-                f"{format_units(PERSONAL_LIMIT)}** 個\n"
-                f"伺服器復活額度：**{format_units(server_units)}／"
-                f"{format_units(SERVER_LIMIT)}** 次\n"
-                f"今日已領取：{claimed}／{DAILY_CLAIMS} 次｜下次領取：{ready}"
-            ),
+        embed = discord.Embed(
+            title="不死圖騰錢包", description=target.mention, colour=EMBED_COLOR
         )
+        embed.add_field(
+            name="不死圖騰",
+            value=f"{format_units(wallet['units'])}／{format_units(PERSONAL_LIMIT)} 個",
+        )
+        embed.add_field(
+            name="伺服器復活額度",
+            value=f"{format_units(server_units)}／{format_units(SERVER_LIMIT)} 次",
+        )
+        embed.add_field(
+            name="今日領取", value=f"{claimed:,}／{DAILY_CLAIMS:,} 次"
+        )
+        embed.add_field(name="下次領取", value=ready, inline=False)
+        embed.set_footer(text=guild.name)
+        await _send(ctx, embed=embed)
 
     @count.command(
         name="donatesave", description="獻祭 1 個不死圖騰，增加伺服器復活額度"
@@ -622,23 +647,41 @@ class Count(commands.Cog):
             scope, member.id if member else None, period, ctx.author.id, personal=True
         )
         rows = await self._statistics(guild.id, query)
+        embed = discord.Embed(
+            title="數數統計", description=query.label, colour=EMBED_COLOR
+        )
         if not rows:
-            await _send(ctx, f"{query.label}：沒有數數紀錄。")
+            embed.description = f"{query.label}\n\n沒有數數紀錄。"
+            await _send(ctx, embed=embed)
             return
         total = {key: sum(row[key] for row in rows) for key in COUNTERS}
         attempts = total["successes"] + total["errors"]
         rate = total["errors"] / attempts if attempts else 0
         last = max(row["last_active"] for row in rows)
-        await _send(
-            ctx,
-            (
-                f"{query.label}｜參與人數：{len(rows)}\n"
-                f"成功：**{total['successes']}**｜錯誤：**{total['errors']}**｜"
-                f"錯誤率：**{rate:.1%}**\n"
-                f"免死保護：{total['protected']}｜"
-                f"復活：{total['revivals']}｜獻祭：{total['sacrifices']}\n"
-                f"最後參與：<t:{int(last)}:R>"
-            ),
+        embed.add_field(name="成功次數", value=f"{total['successes']:,}")
+        embed.add_field(name="錯誤次數", value=f"{total['errors']:,}")
+        embed.add_field(name="錯誤率", value=f"{rate:.1%}")
+        embed.add_field(name="免死保護", value=f"{total['protected']:,}")
+        embed.add_field(name="自動復活", value=f"{total['revivals']:,}")
+        embed.add_field(name="獻祭次數", value=f"{total['sacrifices']:,}")
+        embed.add_field(name="參與人數", value=f"{len(rows):,}")
+        embed.add_field(name="最後參與", value=f"<t:{int(last)}:R>", inline=False)
+        await _send(ctx, embed=embed)
+
+    async def _leaderboard_name(self, guild: discord.Guild, user_id: int) -> str:
+        """Resolve only the displayed page, with a bounded lookup on cache miss."""
+        user = guild.get_member(user_id) or self.bot.get_user(user_id)
+        if user is None:
+            try:
+                async with asyncio.timeout(NAME_LOOKUP_TIMEOUT):
+                    user = await self.bot.fetch_user(user_id)
+            except (discord.HTTPException, TimeoutError):
+                pass
+        if user is None:
+            return f"未知使用者 ({user_id})"
+        # Keep each account on one row and prevent names closing the code block.
+        return " ".join(user.name.split()).replace("`", "ˋ")[:80] or (
+            f"未知使用者 ({user_id})"
         )
 
     @commands.cooldown(1, STATS_COOLDOWN, commands.BucketType.user)
@@ -683,24 +726,34 @@ class Count(commands.Cog):
             await _send(ctx, f"排行榜只有 {pages} 頁。", ephemeral=True)
             return
         start = (query.page - 1) * PAGE_SIZE
-        lines = [
-            (
-                f"**數數排行榜**｜{query.label}｜第 {query.page}／{pages} 頁"
-                f"（共 {len(rows)} 人）"
-            )
-        ]
-        lines.extend(
-            (
-                f"{rank}. <@{row['user_id']}> 成功 {row['successes']}｜"
-                f"錯誤 {row['errors']}｜錯誤率 {row['error_rate']:.1%}｜"
-                f"免死保護 {row['protected']}"
-            )
-            for rank, row in enumerate(rows[start : start + PAGE_SIZE], start + 1)
+        page_rows = rows[start : start + PAGE_SIZE]
+        names = await asyncio.gather(
+            *(self._leaderboard_name(guild, row["user_id"]) for row in page_rows)
         )
-        if not rows:
-            lines.append("還沒有任何紀錄。")
-        lines.append("錯誤率＝錯誤 ÷（成功＋錯誤），免死保護不計入。")
-        await _send(ctx, "\n".join(lines))
+        lines: list[str] = []
+        for rank, (row, name) in enumerate(zip(page_rows, names, strict=True), start + 1):
+            value = (
+                f"{row['error_rate']:.1%}"
+                if query.sort == "error_rate"
+                else f"{row[query.sort]:,}"
+            )
+            lines.append(f"#{rank} {name}, {value}")
+        sort_label = {
+            "successes": "成功次數",
+            "errors": "錯誤次數",
+            "error_rate": "錯誤率（由低至高）",
+        }[query.sort]
+        ranking = "```text\n" + "\n".join(lines) + "\n```" if lines else "還沒有任何紀錄。"
+        embed = discord.Embed(
+            title=f"數數排行榜｜{sort_label}",
+            description=f"{query.label}\n\n{ranking}",
+            colour=EMBED_COLOR,
+        )
+        footer = f"第 {query.page:,}／{pages:,} 頁 · 共 {len(rows):,} 人"
+        if query.sort == "error_rate":
+            footer += "\n錯誤率＝錯誤 ÷（成功＋錯誤），免死保護不計入。"
+        embed.set_footer(text=footer)
+        await _send(ctx, embed=embed)
 
     @commands.cooldown(1, TEST_COOLDOWN, commands.BucketType.user)
     @count.command(name="test", description="用數數規則讀取一段文字，不影響任何紀錄")

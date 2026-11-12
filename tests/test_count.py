@@ -24,7 +24,7 @@ from database.count import (
 )
 
 CHANNEL = 1
-# Monday 00:00 in Asia/Taipei: two claims 13 hours apart stay on the same weekday.
+# Monday 00:00 in Asia/Taipei: two claims 13 hours apart stay on the same date.
 MONDAY = 1_700_409_600.0
 
 
@@ -63,7 +63,9 @@ class Counter:
 
 
 @pytest_asyncio.fixture
-async def repo(tmp_path: Path) -> CountRepository:
+async def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CountRepository:
+    # These tests verify game rules, not random reward selection.
+    monkeypatch.setattr("database.count.roll_claim_reward", lambda: 50)
     repository = CountRepository(tmp_path / "1.db")
     assert await repository.initialize() == set()
     await repository.configure(CHANNEL, 0, snowflake(0))

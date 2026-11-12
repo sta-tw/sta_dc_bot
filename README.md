@@ -26,14 +26,32 @@ readme by claude
 |---|---|
 | `/count help` | 查看完整玩法與指令說明。 |
 | `/count status` | 查看目前頻道的數字、最高紀錄與免死時間。 |
-| `/count claim` | 領取圖騰，平日 0.5 個、週末 0.75 個；依台北時間每天最多 2 次，間隔至少 12 小時，持有上限 4 個。 |
+| `/count claim` | 隨機領取圖騰；依台北時間每天最多 2 次，間隔至少 12 小時，持有上限 4 個。 |
 | `/count wallet [member]` | 查看自己或成員的圖騰、伺服器復活額度及下次可領取時間。 |
 | `/count donatesave` | 獻祭 1 個圖騰，增加 0.2 次伺服器復活額度，上限 3 次。 |
 | `/count stats [scope] [member] [period]` | 查看統計；預設為自己在本伺服器的紀錄。`scope` 可選 `server`／`global`，`period` 可選 `7d`／`30d`／`all`。 |
 | `/count leaderboard [scope] [period] [page] [sort]` | 查看排行榜，每頁 10 人；可依成功次數、錯誤次數或錯誤率排序。 |
 | `/count test` | 開啟私人輸入框，測試訊息會被讀成哪個整數；無法解析時顯示 0，不影響紀錄。 |
 
-管理員可使用 `/count setup channel [grace_seconds]` 啟用頻道、`/count settings channel grace_seconds` 修改免死時間，或 `/count remove channel` 停用並保留統計與圖騰。Bot 需要「檢視頻道」「讀取訊息歷史」「傳送訊息」「新增反應」權限。`/count give member amount`、`/count give_server amount` 可增加或扣除圖騰／復活額度；`/count ban member`、`/count unban member`、`/count bans` 管理禁止數數的成員。以上指令也支援 `!count 子指令`。
+頻道狀態、錢包、統計與排行榜使用 Embed 顯示，整數加入千分位。排行榜每列只顯示名次、Discord 使用者名稱與選定的排序數值，例如：
+
+```text
+#1 baihu._.0321, 6,132
+#2 littleorangemeow, 3,473
+#3 s0323010, 3,048
+```
+
+排行榜標題會標示排序指標，頁尾顯示頁數及總人數；錯誤率以百分比顯示並由低至高排序。無法取得使用者名稱時，會顯示帶有 ID 的未知使用者標記。
+
+每次成功領取圖騰時會隨機抽取獎勵，不再區分平日與週末：
+
+- **90%**：隨機獲得 **0.2～0.8 個**。
+- **8%**：隨機獲得 **1～2 個**。
+- **2%**：直接將個人圖騰**補滿至 4 個**。
+
+前兩種獎勵以 0.01 個為單位，在各自範圍內均勻抽取；實際入帳不超過持有上限。已滿 4 個時不會抽獎，也不消耗領取次數。
+
+管理員可使用 `/count setup channel [grace_seconds]` 啟用頻道、`/count settings channel grace_seconds` 修改免死時間，或 `/count remove channel` 停用並保留統計與圖騰。Bot 需要「檢視頻道」「讀取訊息歷史」「傳送訊息」「新增反應」「嵌入連結」權限。`/count give member amount`、`/count give_server amount` 可增加或扣除圖騰／復活額度；`/count ban member`、`/count unban member`、`/count bans` 管理禁止數數的成員。以上指令也支援 `!count 子指令`。
 
 #### 算式與課本記號
 

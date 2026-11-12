@@ -1,4 +1,5 @@
 import math
+import random
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -16,9 +17,6 @@ SERVER_LIMIT = 300
 TOTEM_UNITS = 100
 SACRIFICE_REWARD = 20
 DAILY_CLAIMS = 2
-WEEKDAY_REWARD = 50
-WEEKEND_REWARD = 75
-SATURDAY = 5
 
 MISSING_SERVER_ROW = "缺少伺服器額度資料，請先呼叫 initialize()。"
 COUNTERS: Final = ("successes", "errors", "protected", "revivals", "sacrifices")
@@ -85,6 +83,16 @@ class Adjustment:
 def _units(units: int) -> str:
     """Format internal 1/100 units as a human-readable totem count."""
     return f"{units / 100:g}"
+
+
+def roll_claim_reward() -> int:
+    """Draw a reward in hundredths; the 2% jackpot fills the personal limit."""
+    draw = random.randrange(100)
+    if draw < 90:
+        return random.randint(20, 80)
+    if draw < 98:
+        return random.randint(100, 200)
+    return PERSONAL_LIMIT
 
 
 def _error_rate(stats: UserStatistics) -> float:
@@ -424,7 +432,6 @@ class CountRepository:
     async def claim(self, user_id: int, now: float) -> str:
         date = datetime.fromtimestamp(now, TAIPEI)
         day = date.date().isoformat()
-        reward = WEEKEND_REWARD if date.weekday() >= SATURDAY else WEEKDAY_REWARD
         async with self._transaction() as db:
             row = await self._wallet(db, user_id)
             units = row["units"] if row is not None else 0
@@ -446,6 +453,7 @@ class CountRepository:
                 return (
                     f"尚未滿 {COOLDOWN // 3600} 小時，下次可領取：<t:{next_claim}:R>。"
                 )
+            reward = roll_claim_reward()
             added = min(reward, PERSONAL_LIMIT - units)
             await self._execute(
                 db,
@@ -458,8 +466,9 @@ class CountRepository:
                 (user_id, units + added, now, day, count + 1),
             )
             await self._record_action(db, user_id, now, "claim", added)
+            bonus = "幸運補滿！" if reward == PERSONAL_LIMIT else ""
             return (
-                f"領取成功！獲得 {_units(added)} 個不死圖騰，"
+                f"領取成功！{bonus}獲得 {_units(added)} 個不死圖騰，"
                 f"目前持有 {_units(units + added)}／{_units(PERSONAL_LIMIT)} 個。"
             )
 
