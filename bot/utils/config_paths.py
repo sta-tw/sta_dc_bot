@@ -34,6 +34,10 @@ class ConfigPaths:
         return cls.DATABASE_DIR / f"{guild_id}.db"
 
     @classmethod
+    def counting_database(cls, guild_id: int) -> Path:
+        return cls.DATABASE_DIR / f"counting_{guild_id}.db"
+
+    @classmethod
     def instagram_feed_state(cls, scope_id: int) -> Path:
         return cls.INSTAGRAM_FEED_DIR / str(scope_id) / "state.json"
 

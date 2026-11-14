@@ -277,7 +277,7 @@ class Count(commands.Cog):
         """Must be called while holding the guild lock."""
         repository = self._repositories.get(guild_id)
         if repository is None:
-            repository = CountRepository(ConfigPaths.guild_database(guild_id))
+            repository = CountRepository(ConfigPaths.counting_database(guild_id))
             self._channels[guild_id] = await repository.initialize()
             self._repositories[guild_id] = repository
         return repository
@@ -617,8 +617,8 @@ class Count(commands.Cog):
         if query.is_global:
             paths = [
                 path
-                for path in ConfigPaths.DATABASE_DIR.glob("*.db")
-                if path.stem.isdecimal()
+                for path in ConfigPaths.DATABASE_DIR.glob("counting_*.db")
+                if path.stem.removeprefix("counting_").isdecimal()
             ]
             return await CountRepository.global_statistics(paths, since, query.user_id)
         async with self._lock(guild_id):
@@ -944,6 +944,10 @@ class Count(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_available(self, guild: discord.Guild) -> None:
+        # A guild without counting data has no channels to clean up. Skipping it
+        # keeps startup from creating a database for every guild.
+        if not ConfigPaths.counting_database(guild.id).exists():
+            return
         # Clean up channels that were deleted while the Bot was offline.
         async with self._lock(guild.id):
             _ = await self._repository(guild.id)
