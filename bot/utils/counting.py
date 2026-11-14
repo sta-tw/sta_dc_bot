@@ -19,8 +19,10 @@ input cannot exhaust CPU or memory.
 import cmath
 import math
 import re
+import time
 import unicodedata
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Final, Literal
@@ -62,6 +64,11 @@ MAX_TERMS: Final = 10_000
 MAX_MATRIX: Final = 8
 MAX_FACTORIZE: Final = 10**12
 MAX_ZETA_NEGATIVE: Final = 200
+# Wall-clock seconds one evaluation may take. Longer work is abandoned, because
+# built-in calls such as totient() do not count toward MAX_WORK.
+EVALUATION_TIME_LIMIT: Final = 0.5
+# Factorization steps between two clock checks.
+_CLOCK_INTERVAL: Final = 4096
 # Floating point noise below this relative size is ignored (2.9999999999 -> 3).
 EPSILON: Final = 1e-9
 
@@ -201,6 +208,15 @@ class ExpressionError(Exception):
 
 class _SyntaxError(ExpressionError):
     """The tokens do not form an expression (as opposed to a math failure)."""
+
+
+# Monotonic deadline of the evaluation running in this context.
+_deadline: ContextVar[float] = ContextVar("counting_deadline", default=math.inf)
+
+
+def _check_time() -> None:
+    if time.monotonic() > _deadline.get():
+        raise ExpressionError("too much time")
 
 
 # --- number helpers ------------------------------------------------------------
@@ -500,7 +516,11 @@ def _factorize(value: Number) -> dict[int, int]:
         raise ExpressionError("argument out of range")
     factors: dict[int, int] = {}
     divisor = 2
+    steps = 0
     while divisor * divisor <= number:
+        steps += 1
+        if steps % _CLOCK_INTERVAL == 0:
+            _check_time()
         while number % divisor == 0:
             factors[divisor] = factors.get(divisor, 0) + 1
             number //= divisor
@@ -750,6 +770,7 @@ class _Env:
         self.work += cost
         if self.work > MAX_WORK:
             raise ExpressionError("too much work")
+        _check_time()
         missing = name not in self.variables
         saved = self.variables.get(name, Fraction(0))
         self.variables[name] = value
@@ -1505,14 +1526,18 @@ def _round_toward_zero(value: Number) -> int:
 def evaluate(content: str) -> int:
     """Evaluate the expression a message starts with, rounded toward zero.
 
-    Raises ExpressionError if the message does not start with valid math.
+    Raises ExpressionError if the message does not start with valid math, or if it
+    takes longer than EVALUATION_TIME_LIMIT seconds.
     """
+    token = _deadline.set(time.monotonic() + EVALUATION_TIME_LIMIT)
     try:
         node = _Parser(normalize(content)).parse()
         result = _round_toward_zero(_scalar(node(_Env())))
     except (ArithmeticError, ValueError, TypeError) as error:
         # Division by zero, overflow, math domain errors and the like.
         raise ExpressionError(str(error)) from error
+    finally:
+        _deadline.reset(token)
     if abs(result) >= 10**MAX_DIGITS:
         raise ExpressionError("result too large")
     return result

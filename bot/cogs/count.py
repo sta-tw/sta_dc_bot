@@ -2,6 +2,8 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final, Literal, override
@@ -44,6 +46,10 @@ STATS_CONCURRENCY = 2
 TEST_COOLDOWN = 3.0
 BAN_LIST_LIMIT = 50
 NAME_LOOKUP_TIMEOUT = 3.0
+# Expression evaluation runs on a small pool, so a burst of heavy messages cannot
+# occupy every CPU core. The wait limit only guards against a stuck worker.
+EVALUATION_WORKERS: Final = 2
+EVALUATION_WAIT_LIMIT: Final = 10.0
 EMBED_COLOR: Final = discord.Colour.blurple()
 NO_MENTIONS: Final = discord.AllowedMentions.none()
 # Reactions are the in-channel result markers.
@@ -205,6 +211,28 @@ def read_count(content: str) -> int:
     return 0 if number is None else number
 
 
+_evaluator = ThreadPoolExecutor(
+    max_workers=EVALUATION_WORKERS, thread_name_prefix="count-eval"
+)
+
+
+async def run_off_loop[T](
+    function: Callable[[str], T], content: str, fallback: T
+) -> T:
+    """Run function(content) on the evaluation pool; fallback if it takes too long.
+
+    The evaluator stops itself at EVALUATION_TIME_LIMIT, so the wait limit only
+    matters if a worker is stuck. Either way the event loop keeps serving events.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_evaluator, function, content), EVALUATION_WAIT_LIMIT
+        )
+    except TimeoutError:
+        return fallback
+
+
 class CountTestModal(discord.ui.Modal, title="數數測試（不影響任何紀錄）"):
     content: discord.ui.TextInput["CountTestModal"] = discord.ui.TextInput(
         label="輸入要測試的訊息",
@@ -215,9 +243,8 @@ class CountTestModal(discord.ui.Modal, title="數數測試（不影響任何紀�
 
     @override
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        _ = await interaction.response.send_message(
-            f"結果：**{read_count(self.content.value)}**", ephemeral=True
-        )
+        shown = await run_off_loop(read_count, self.content.value, 0)
+        _ = await interaction.response.send_message(f"結果：**{shown}**", ephemeral=True)
 
 
 class CountTestView(discord.ui.View):
@@ -781,7 +808,7 @@ class Count(commands.Cog):
         channels = self._channels.get(guild.id)
         if channels is not None and message.channel.id not in channels:
             return
-        number = parse_number(message.content)
+        number = await run_off_loop(parse_number, message.content, None)
         if number is None:
             return
         context = await self.bot.get_context(message)
@@ -928,7 +955,10 @@ class Count(commands.Cog):
         async with self._lock(payload.guild_id):
             repository = await self._repository(payload.guild_id)
             state = await repository.state(payload.channel_id)
-        if state is None or parse_number(content) == int(state["current_number"]):
+        if state is None:
+            return
+        number = await run_off_loop(parse_number, content, None)
+        if number == int(state["current_number"]):
             return
         await self._announce_lost_count(
             payload.guild_id, payload.channel_id, {payload.message_id}, "編輯掉"
